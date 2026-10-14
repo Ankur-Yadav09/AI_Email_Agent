@@ -10,3 +10,8 @@ uv run python -c "import fastapi, pydantic; print('Dependencies installed succes
 5. Lets initialize Github Repo
 git init
 git branch -M main
+git add .
+Now create github repo with name AI_Email_Agent
+git remote add origin https://github.com/Ankur-Yadav09/AI_Email_Agent.git
+
+git push -u origin main
