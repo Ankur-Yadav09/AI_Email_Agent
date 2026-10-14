@@ -1,3 +1,4 @@
+---------------------------- PROJECT SETUP ---------------------------------------------
 1. Creating a Virtual Environment
 uv venv
 2. Activate Virtual Environment
@@ -15,3 +16,24 @@ Now create github repo with name AI_Email_Agent
 git remote add origin https://github.com/Ankur-Yadav09/AI_Email_Agent.git
 
 git push -u origin main
+
+---------------------------- CREATING MOCK BANKING APIs ---------------------------------------------
+1. create files such as:
+apis/banking_api.py
+models/banking_models.py
+tests/test_banking_api.py
+2. First define model schemas for
+Balance, Transcation and Statement Response in banking_models.py.
+3. Now lets define apis to handle this three operations:
+- Account balance enquiry
+- Credit card transaction enquiry
+- Bank statement request in banking_api.py
+4. Create main.py
+This file starts the FastAPI application and registers the banking routes.
+5. Run the application
+uv run python -m uvicorn main:app --reload --port 8000
+The --reload option automatically restarts the development server when you change code.
+6. Create automated tests for the banking APIs -> tests/test_banking_api.py.
+7. Run the tests:
+uv run python -m pytest tests/test_banking_api.py -v
+--------------------------------------------
