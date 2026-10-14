@@ -1,0 +1,12 @@
+1. Creating a Virtual Environment
+uv venv
+2. Activate Virtual Environment
+.venv\Scripts\activate
+3. Install the initial dependencies
+uv add fastapi "uvicorn[standard]" pydantic python-dotenv
+uv add --dev pytest httpx
+4. verify the installation
+uv run python -c "import fastapi, pydantic; print('Dependencies installed successfully')"
+5. Lets initialize Github Repo
+git init
+git branch -M main
