@@ -14,3 +14,6 @@ wheels/
 
 # IDE
 .vscode/
+
+# database files
+banking.db

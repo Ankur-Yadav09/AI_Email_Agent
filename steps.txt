@@ -36,4 +36,20 @@ The --reload option automatically restarts the development server when you chang
 6. Create automated tests for the banking APIs -> tests/test_banking_api.py.
 7. Run the tests:
 uv run python -m pytest tests/test_banking_api.py -v
---------------------------------------------
+8. Commit this milestone
+git add .
+git commit -m "added mock banking API."
+git push
+------------------SHIFTING TO SQLLITE DB AND UPDATING THE BANKING_APIS------------------
+1. Creating utils/database.py 
+create tables customers, accounts, cards, transactions and statement_requests.
+2. Update the main.py code for initialize database using lifespan
+uv run python -m uvicorn main:app --reload --port 8000
+3. check whether database is initialize or not
+4. Modiying the apis/banking_api.
+5. Now run the tests/test_banking_api.py
+uv run python -m pytest tests/test_banking_api.py -v
+6. git add .
+git commit -m "Add SQLite banking database and API integration"
+git push
+----------------------------------------------------------------------------------------

@@ -13,6 +13,9 @@ from models.banking_models import (
     StatementResponse,
     TransactionsResponse,
 )
+from utils.database import (
+    get_connection,  # Provides a database connection.
+)
 
 # Pydantic response models -> Validate and document the API response structure
 
@@ -21,45 +24,6 @@ router = APIRouter(prefix="/api", tags=["Banking"])
 # prefix="/api" means every route starts with /api.
 # tags=["Banking"] groups these endpoints under the Banking section in Swagger UI.
 
-# Synthetic data for development and testing only.
-ACCOUNTS = {
-    "1234567890": {
-        "customer_id": "CUST001",
-        "balance": 25000.00,
-        "currency": "INR",
-    }
-}
-# This is a Python dictionary that acts as our simulated database.
-# The account number is the key. Its value is another dictionary containing the owner, balance, and currency.
-
-CARDS = {
-    "4567XXXX8901": {
-        "customer_id": "CUST001",
-        "transactions": [
-            {
-                "transaction_id": "TXN001",
-                "date": "2026-10-12",
-                "description": "Grocery Store",
-                "amount": 1250.00,
-                "transaction_type": "debit",
-            },
-            {
-                "transaction_id": "TXN002",
-                "date": "2026-10-11",
-                "description": "Online Shopping",
-                "amount": 2499.00,
-                "transaction_type": "debit",
-            },
-            {
-                "transaction_id": "TXN003",
-                "date": "2026-10-10",
-                "description": "Refund",
-                "amount": 500.00,
-                "transaction_type": "credit",
-            },
-        ],
-    }
-}
 
 # What does the decorator do?
 # @router.get(...) registers a function as an HTTP GET endpoint.
@@ -75,6 +39,7 @@ CARDS = {
 # FastAPI passes CUST001 into the customer_id parameter.
 # This header is only a development shortcut. A real application must derive the customer identity from verified authentication rather than trust a header supplied by the caller.
 
+
 @router.get(
     "/accounts/{account_reference}/balance",
     response_model=BalanceResponse,
@@ -83,32 +48,38 @@ def get_account_balance(
     account_reference: str,
     customer_id: str = Header(alias="X-Demo-Customer-ID"),
 ):
-    account = ACCOUNTS.get(account_reference)
+    with get_connection() as connection:
 
-    if not account:
-        raise HTTPException(
-            status_code=404,
-            detail="Account not found",
-        )
-    # First, we check whether the account exists.
-    # If it doesn't, we return HTTP 404 Not Found.
+        # First, check whether the account exists.
+        account = connection.execute(
+            """
+            SELECT account_number, customer_id, balance, currency
+            FROM accounts
+            WHERE account_number = ?
+            """,
+            (account_reference,),
+        ).fetchone()
 
-    if account["customer_id"] != customer_id:
-        raise HTTPException(
-            status_code=403,
-            detail="You are not authorized to access this account",
-        )
-    # This checks whether the requested account belongs to the supplied customer.
-    # - Correct customer: continue.
-    # - Different customer: return 403 Forbidden.
+        # Return 404 if the account does not exist.
+        if account is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Account not found",
+            )
 
+        # Return 403 if the account belongs to another customer.
+        if account["customer_id"] != customer_id:
+            raise HTTPException(
+                status_code=403,
+                detail="You are not authorized to access this account",
+            )
+
+    # Return the account details only after ownership validation.
     return {
-        "account_reference": account_reference,
+        "account_reference": account["account_number"],
         "balance": account["balance"],
         "currency": account["currency"],
     }
-    # FastAPI validates this dictionary against BalanceResponse and serializes it into JSON.
-
 
 @router.get(
     "/cards/{card_reference}/transactions",
@@ -119,27 +90,54 @@ def get_card_transactions(
     limit: int = Query(default=5, ge=1, le=10), # The limit parameter controls how many transactions the API returns.
     customer_id: str = Header(alias="X-Demo-Customer-ID"),
 ):
-    # You can request the last two transactions using:
-    # GET /api/cards/4567XXXX8901/transactions?limit=2
-    
-    card = CARDS.get(card_reference)
+    # Open a connection to the SQLite database.
+    with get_connection() as connection:
 
-    if not card:
-        raise HTTPException(
-            status_code=404,
-            detail="Card not found",
-        )
+        # Find the card only if it belongs to this customer.
+        card = connection.execute(
+            """
+            SELECT card_id, masked_card_number
+            FROM cards
+            WHERE masked_card_number = ? AND customer_id = ?
+            """,
+            (card_reference, customer_id),
+        ).fetchone()
 
-    if card["customer_id"] != customer_id:
-        raise HTTPException(
-            status_code=403,
-            detail="You are not authorized to access this card",
-        )
+        # Stop if the card does not exist or belongs to another customer.
+        if card is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Card not found",
+            )
 
+        # Fetch transactions associated with this card.
+        transactions = connection.execute(
+            """
+            SELECT transaction_id, transaction_date,
+                   description, amount, transaction_type
+            FROM transactions
+            WHERE card_id = ?
+            ORDER BY transaction_date DESC
+            LIMIT ?
+            """,
+            (card["card_id"], limit),
+        ).fetchall()
+
+    # Convert database rows into the response format expected by FastAPI.
     return {
-        "card_reference": card_reference,
-        "transactions": card["transactions"][:limit], # Python list slicing returns the first limit entries from the list.
+        "card_reference": card["masked_card_number"],
+        "transactions": [
+            {
+                "transaction_id": transaction["transaction_id"],
+                "date": transaction["transaction_date"],
+                "description": transaction["description"],
+                "amount": transaction["amount"],
+                "transaction_type": transaction["transaction_type"],
+            }
+            for transaction in transactions
+        ],
     }
+
 
 
 @router.post(
@@ -148,36 +146,68 @@ def get_card_transactions(
 )
 def request_account_statement(
     account_reference: str,
-    start_date: date, # FastAPI parses date inputs in YYYY-MM-DD format.
+    start_date: date,
     end_date: date,
     customer_id: str = Header(alias="X-Demo-Customer-ID"),
 ):
-    account = ACCOUNTS.get(account_reference)
-
-    if not account:
-        raise HTTPException(
-            status_code=404,
-            detail="Account not found",
-        )
-    # First, we check whether the account exists.
-    # If it doesn't, we return HTTP 404 Not Found.
-    
-    if account["customer_id"] != customer_id:
-        raise HTTPException(
-            status_code=403,
-            detail="You are not authorized to access this account",
-        )
-
+    # Validate the requested date range.
     if start_date > end_date:
         raise HTTPException(
             status_code=422,
             detail="Start date must not be after end date",
         )
 
+    # Open a connection to the database.
+    with get_connection() as connection:
+
+        # Find the account belonging to this customer.
+        account = connection.execute(
+            """
+            SELECT account_id, account_number
+            FROM accounts
+            WHERE account_number = ? AND customer_id = ?
+            """,
+            (account_reference, customer_id),
+        ).fetchone()
+
+        # Do not allow access to another customer's account.
+        if account is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Account not found",
+            )
+
+        # Generate a unique reference for this request.
+        statement_reference = (
+            f"STMT-{uuid4().hex[:12].upper()}"
+        )
+
+        # Save the statement request in SQLite.
+        connection.execute(
+            """
+            INSERT INTO statement_requests (
+                statement_reference,
+                account_id,
+                start_date,
+                end_date,
+                status
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                statement_reference,
+                account["account_id"],
+                start_date.isoformat(),
+                end_date.isoformat(),
+                "REQUESTED",
+            ),
+        )
+
+    # Return the saved request details.
     return {
-        "account_reference": account_reference,
+        "account_reference": account["account_number"],
         "start_date": start_date.isoformat(),
         "end_date": end_date.isoformat(),
-        "statement_reference": f"STMT-{uuid4().hex[:12].upper()}",
+        "statement_reference": statement_reference,
         "status": "REQUESTED",
     }
