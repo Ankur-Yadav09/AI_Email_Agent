@@ -1,0 +1,179 @@
+MCP AND API CONCEPTS — AI EMAIL AGENT
+======================================
+
+1. PROJECT CONTEXT
+------------------
+We are building an Intelligent Email Processing and Automated Customer Response System for a financial institution.
+
+Example customer email:
+"Hi, please check my account balance and send me my last 5 credit card transactions."
+
+The AI Email Agent needs to:
+1. Understand what the customer is asking.
+2. Retrieve the account balance.
+3. Retrieve the last 5 card transactions.
+4. Prepare a response for review or approval.
+
+An LLM can understand the email, but it cannot automatically access our banking database. It needs a controlled way to interact with external systems. APIs and MCP help provide that connection.
+
+
+2. WHAT IS AN API?
+------------------
+API stands for Application Programming Interface.
+
+An API allows one software application to communicate with another application.
+
+In our project, we created a FastAPI application with these banking endpoints:
+
+A. Account balance
+   GET /api/accounts/{account_reference}/balance
+   Purpose: Retrieve an account balance after checking ownership.
+
+B. Card transactions
+   GET /api/cards/{card_reference}/transactions
+   Purpose: Retrieve transactions for an authorized card.
+
+C. Statement request
+   POST /api/accounts/{account_reference}/statements
+   Purpose: Submit a request for an account statement.
+
+These endpoints communicate with our SQLite database, perform checks, and return results.
+
+Important: An API does not need AI to work. A normal Python program can call the balance API and receive the result.
+
+
+3. WHY DO WE NEED MCP?
+----------------------
+MCP stands for Model Context Protocol.
+
+MCP is a standardized way for AI applications to discover and interact with tools and other capabilities.
+
+Without MCP, we could write custom integration code for each AI application or framework. We would have to handle tool descriptions, input parameters, outputs, and connections separately.
+
+MCP gives compatible AI applications a common protocol for discovering available tools and calling them.
+
+Think of MCP as a universal adapter that helps AI applications connect to supported tools in a consistent way.
+
+MCP does NOT automatically make a tool intelligent or secure. We still have to implement the business logic, validation, and authorization.
+
+
+4. OUR PROJECT ARCHITECTURE
+---------------------------
+Incoming customer email
+        |
+        v
+AI Agent (LLM + LangGraph)
+- Understands the email
+- Determines which operation is needed
+        |
+        v
+MCP Client
+- Connects to the MCP server
+- Discovers tools
+- Sends tool-call requests
+        |
+        v
+MCP Server — Banking Tools
+- get_account_balance
+- get_card_transactions
+- request_account_statement
+        |
+        v
+SQLite Database
+- Stores customer, account, card, transaction, and statement-request data
+
+The tool returns its result through the MCP server and client to the agent. The agent can then use that result to prepare a response.
+
+
+5. API VS. MCP TOOL
+-------------------
+API example:
+GET /api/accounts/1234567890/balance
+
+MCP tool example:
+get_account_balance(account_reference="1234567890", customer_id="CUST001")
+
+Main differences:
+- API access: Usually an HTTP request to an endpoint.
+- MCP tool access: A tool call sent through the MCP protocol.
+- API documentation: Often described through API documentation such as OpenAPI.
+- MCP tool description: Includes a tool name, description, and input schema that an MCP client can discover.
+- Main API purpose: Expose application functionality to authorized software clients.
+- Main MCP purpose: Standardize how compatible AI applications discover and call tools.
+
+Both can perform the same business operation. MCP does not mean APIs are outdated, and MCP does not necessarily replace APIs.
+
+
+6. WHY DO OUR MCP TOOLS QUERY SQLITE DIRECTLY?
+----------------------------------------------
+In our current learning implementation, the MCP server queries SQLite directly rather than calling the FastAPI endpoints.
+
+We chose this approach because:
+- It makes the first MCP implementation simpler.
+- The MCP server can run its database queries without needing a separate FastAPI server to be running.
+- It helps us learn MCP concepts independently: tool definitions, discovery, client-server communication, and execution.
+
+There is a trade-off: the FastAPI endpoints and MCP tools may duplicate some business logic.
+
+A more mature design could put the business logic in a shared service layer. Both the API endpoints and MCP tools would call that same layer.
+
+Another valid design is for the MCP server to call the existing FastAPI endpoints. This can be useful when the API already owns the business logic, authentication, and data access.
+
+We are not switching from APIs to MCP because APIs are outdated. We are adding MCP because our application includes an AI agent that needs a standardized way to use tools.
+
+
+7. WHAT ARE THE MCP SERVER, MCP CLIENT, AND AI AGENT?
+----------------------------------------------------
+MCP Server:
+- Defines and exposes tools.
+- Validates inputs and runs the tool implementation.
+- Returns tool results to the client.
+
+MCP Client:
+- Connects to the MCP server.
+- Discovers available tools.
+- Sends tool-call requests and receives results.
+
+AI Agent:
+- Understands the customer's request.
+- Decides which tool or tools are appropriate.
+- Uses the tool results to continue its workflow.
+
+In our project, the MCP client is the communication layer. The AI agent or its orchestration logic decides which tools are needed.
+
+Our mcp_client.py file will initially be a small test client. Later, MCP tool discovery and execution will be integrated into the LangGraph workflow so the agent can use tools based on the email content.
+
+
+8. IMPORTANT SECURITY CONCEPT
+-----------------------------
+Our current tools accept customer_id as an argument. This is acceptable only for a synthetic learning/demo project.
+
+In production, do NOT trust a customer ID supplied by the LLM or by an untrusted user as proof of identity.
+
+The system must derive the customer's identity from verified authentication context, such as a validated session or access token. The backend must check that the customer owns the requested account or card before returning data or submitting a request.
+
+MCP does not replace authentication or authorization. These protections must be enforced by trusted backend code.
+
+
+9. INTERVIEW-READY ANSWER
+-------------------------
+Question: Why did you use MCP instead of directly calling APIs?
+
+Answer:
+"We exposed banking operations as MCP tools so our AI agent could discover and invoke capabilities through a standardized protocol. The MCP server defines tools such as balance retrieval, transaction lookup, and statement requests, while the MCP client connects to the server and executes those tools. This separates the AI orchestration layer from the banking capabilities and makes integrations easier to reuse across compatible AI applications. MCP complements APIs rather than replacing them, and authorization still has to be enforced by the underlying business logic."
+
+
+10. MAIN TAKEAWAY
+-----------------
+APIs expose application functionality.
+MCP standardizes how compatible AI applications discover and interact with tools.
+
+They can work together in the same architecture.
+
+In our project:
+- FastAPI provides HTTP endpoints.
+- The MCP server exposes banking tools.
+- The MCP client communicates with the MCP server.
+- The AI agent decides which tools to use based on the customer's email.
+- SQLite stores the demo banking data.
+- Backend authorization checks protect customer data.
