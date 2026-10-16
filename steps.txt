@@ -52,4 +52,28 @@ uv run python -m pytest tests/test_banking_api.py -v
 6. git add .
 git commit -m "Add SQLite banking database and API integration"
 git push
-----------------------------------------------------------------------------------------
+----------------------------BUILDING MCP SERVER-----------------------------------------
+1. Install the MCP SDK
+uv add "mcp[cli]"
+The [cli] extra gives you the mcp command;
+2. Create the MCP server file
+agents/mcp_server.py
+3. First start, registering the account balance function as an MCP tool
+uv run python -m agents.mcp_server
+The default stdio transport is appropriate for our first local MCP server. It waits for an MCP client to communicate, so a quiet terminal is normal.
+4. Test the MCP server with the official Inspector
+uv run mcp dev agents/mcp_server.py
+
+This launches the MCP Inspector, a testing interface for MCP servers.
+If it starts successfully:
+1. Open the Inspector URL shown in the terminal.
+2. Connect to your Banking Tools server.
+3. Open Tools and click List Tools.
+4. Confirm that get_account_balance appears.
+5. Call it with account_reference set to 1234567890 and customer_id set to CUST001.
+
+5. Now registers other 2 tools on mcp servers
+6. git add .
+git commit -m "Add our 3 tools on mcp server"
+git push
+----------------------------BUILDING THE MCP CLIENT-------------------------------------
