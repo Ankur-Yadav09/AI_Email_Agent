@@ -90,4 +90,22 @@ uv run python agents/mcp_client.py
 4. git add .
 git commit -m "Build mcp client to connect with mcp server"
 git push
-----------------------------------------------------------------------------------------
+----------------------------CONNECT OLLAMA TO PYTHON------------------------------------
+1. Install the Ollama Python package.
+uv add ollama
+2. Create utils/llm_client.py file.
+3. Run the llm_client.py 
+uv run python utils/llm_client.py
+--------------------CONNECT THE LLM WITH MCP TOOLS--------------------------------------
+1. Create agents/email_agent.py
+2. The expected behavior is:
+    1. Ollama classifies the email as a balance request.
+    2. The MCP client connects to the banking server.
+    3. The MCP tool retrieves the demo account balance.
+    4. Ollama generates a customer-friendly email draft using the tool result.
+3. Run it from the project root
+uv run python agents/email_agent.py
+4. git add .
+git commit -m "added email agent which can call mcp tools"
+git push
+--------------------IMPLEMENT MULTI-INTENT EMAILS---------------------------------------
