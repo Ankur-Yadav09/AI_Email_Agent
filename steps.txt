@@ -109,3 +109,7 @@ uv run python agents/email_agent.py
 git commit -m "added email agent which can call mcp tools"
 git push
 --------------------IMPLEMENT MULTI-INTENT EMAILS---------------------------------------
+1. Update identify_intent() in agents/email_agent.py to handle multi-intent emails.
+2. git add .
+git commit -m "Now email agent also support multi-intent emails"
+git push
