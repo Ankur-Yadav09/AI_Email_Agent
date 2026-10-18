@@ -113,3 +113,16 @@ git push
 2. git add .
 git commit -m "Now email agent also support multi-intent emails"
 git push
+--------------------CONVERTING THE WORKFLOW INTO LANGGRAPH NODES------------------------
+1. Install LangGraph
+uv add langgraph
+2. Create agents/email_workflow.py.
+3. Run the workflow
+uv run python -m agents.email_workflow
+4. Create models/email_model.py
+5. Test human review flow
+uv run python tests/test_human_review_flow.py
+6. git add .
+git commit -m "Completed langgraph workflow"
+git push
+--------------------FASTAPI INTERGRATION------------------------
