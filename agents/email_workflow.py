@@ -11,7 +11,6 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
-from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 from mcp import ClientSession, StdioServerParameters
@@ -19,7 +18,7 @@ from mcp.client.stdio import stdio_client
 
 # Reuse the classifier you have already tested.
 from agents.email_agent import identify_intent
-from models.email_model import EmailState
+from models.email_state import EmailState
 
 # Import our existing LLM function.
 from utils.llm_client import generate_response
@@ -385,6 +384,8 @@ def human_review(state: EmailState) -> dict:
         "status": "rejected",
     }
 
+
+
 # --------------------------------------------------
 # 8. Build and compile the LangGraph workflow
 # --------------------------------------------------
@@ -418,48 +419,14 @@ builder.add_edge("human_review", END)
 # Unsupported requests get a safe response without banking tool calls.
 builder.add_edge("handle_unsupported", END)
 
-email_workflow = builder.compile(
-    checkpointer=InMemorySaver()
-)
-
-
 # --------------------------------------------------
-# 8. Run a simple test
+# 9. Create a workflow using the supplied checkpointer
 # --------------------------------------------------
+def build_email_workflow(checkpointer):
+    """
+    Compile the existing email graph with the supplied checkpointer.
 
-async def main():
-    email_schema = {
-        "email_text": "Please tell me my account balance and show my recent credit card transactions.",
-        "intents": [],
-        "tool_results": [],
-        "draft": "",
-        "errors": [],
-        "status": "received",
-        "approval_status": "pending",
-        "reviewer_feedback": "",
-    }
-    result = await email_workflow.ainvoke(email_schema, timeout=30) # type: ignore
+    FastAPI will supply a persistent SQLite checkpointer at startup.
+    """
+    return builder.compile(checkpointer=checkpointer) # type: ignore
 
-    print("\n--- LangGraph Workflow Result ---")
-    print("Detected intents:", result.get("intents"))
-    print("Status:", result.get("status"))
-    print(
-        "Tool results:",
-        json.dumps(
-            result.get("tool_results", []),
-            indent=2,
-            ensure_ascii=False,
-        ),
-    )
-    print("Errors:", result.get("errors", []))
-    print("Draft:", result.get("draft", "Not generated yet"))
-
-
-if __name__ == "__main__":
-    # Optional
-    from IPython.display import Image
-    img = Image(email_workflow.get_graph().draw_mermaid_png())
-    with open("email_workflow_graph.png", "wb") as f:
-        f.write(img.data) # type: ignore
-
-    asyncio.run(main())

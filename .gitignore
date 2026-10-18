@@ -17,3 +17,5 @@ wheels/
 
 # database files
 banking.db
+email.db
+email_checkpoint.db

@@ -125,4 +125,18 @@ uv run python tests/test_human_review_flow.py
 6. git add .
 git commit -m "Completed langgraph workflow"
 git push
---------------------FASTAPI INTERGRATION------------------------
+--------------------FASTAPI INTERGRATION------------------------------------------------
+1. create a new file -> apis/email_api.py
+2. create a new file -> models/email_models.py
+3. Add email_router in main.py
+4. create persistent email storage using SQLite.
+5. create a new file -> utils/email_database.py
+6. create a new test file -> tests/test_email_database.py
+uv run pytest tests/test_email_database.py -v
+.\.venv\Scripts\python.exe -m pytest tests/test_email_database.py -v
+7. Install the SQLite checkpointer
+uv add langgraph-checkpoint-sqlite
+8. git add .
+git commit -m "Completed fastapi integration"
+git push
+--------------------MAKING API MORE SECURE----------------------------------------------
