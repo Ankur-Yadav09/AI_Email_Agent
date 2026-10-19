@@ -121,104 +121,147 @@ def handle_unsupported(state: EmailState):
 # 6. Temporary node for supported requests
 # --------------------------------------------------
 
-async def supported_requests(state: EmailState) -> dict:
-    """
-    Execute each supported banking request through MCP.
-    Store successful results and failures separately.
-    """
 
-    # Demo-only identifiers. Never use LLM-generated identifiers
-    # as proof of customer identity or account ownership.
-    customer_id = "CUST001"
-    account_reference = "1234567890"
-    card_reference = "4567XXXX8901"
+async def supported_requests(state: EmailState) -> dict:
+    """Execute supported requests using customer-specific MCP tools."""
+
+    customer_id = state.verified_customer_id
+
+    if not customer_id:
+        return {
+            "tool_results": [],
+            "errors": ["Customer identity could not be verified."],
+            "status": "identity_verification_failed",
+        }
 
     intents = state.intents
     tool_results = []
     errors = []
 
-    # Connect to the MCP server.
     async with stdio_client(server_params) as (read, write):  # noqa: SIM117
         async with ClientSession(read, write) as session:
             await session.initialize()
 
-            # Discover available MCP tools.
             response = await session.list_tools()
             available_tools = {tool.name for tool in response.tools}
 
-            # Process every requested intent independently.
-            for intent in intents:
-                tool_name = None
-                arguments = {}
-
-                if intent == "check_balance":
-                    tool_name = "get_account_balance"
-                    arguments = {
-                        "account_reference": account_reference,
-                        "customer_id": customer_id,
-                    }
-
-                elif intent == "get_transactions":
-                    tool_name = "get_card_transactions"
-                    arguments = {
-                        "card_reference": card_reference,
-                        "customer_id": customer_id,
-                        "limit": 10,
-                    }
-
-                elif intent == "request_statement":
-                    tool_name = "request_account_statement"
-                    arguments = {
-                        "account_reference": account_reference,
-                        "customer_id": customer_id,
-
-                        # Temporary demo dates.
-                        # We'll extract dates from the email later.
-                        "start_date": "2026-10-01",
-                        "end_date": "2026-10-17",
-                    }
-
-                else:
-                    errors.append(f"Unsupported intent: {intent}")
-                    continue
-
-                # Check that the requested tool exists.
+            async def call_banking_tool(tool_name: str, arguments: dict):
+                """Call an MCP tool and return its JSON result."""
                 if tool_name not in available_tools:
-                    errors.append(
-                        f"{intent}: MCP tool '{tool_name}' is unavailable."
+                    raise ValueError(
+                        f"Required MCP tool '{tool_name}' is unavailable."
                     )
-                    continue
 
+                result = await session.call_tool(
+                    tool_name,
+                    arguments=arguments,
+                )
+
+                if result.is_error:
+                    raise ValueError("MCP tool execution failed.")
+
+                result_text = "\n".join(
+                    item.text # type: ignore
+                    for item in result.content
+                    if hasattr(item, "text")
+                )
+
+                data = json.loads(result_text)
+
+                if not isinstance(data, dict) or "error" in data:
+                    raise ValueError("Banking tool returned an error.")
+
+                return data
+
+            # Discover resources belonging to this customer.
+            try:
+                accounts_data = await call_banking_tool(
+                    "get_customer_accounts",
+                    {"customer_id": customer_id},
+                )
+                cards_data = await call_banking_tool(
+                    "get_customer_cards",
+                    {"customer_id": customer_id},
+                )
+            except Exception:  # noqa: BLE001
+                return {
+                    "tool_results": [],
+                    "errors": [
+                        "Unable to retrieve the customer's account resources."
+                    ],
+                    "status": "failed",
+                }
+
+            accounts = accounts_data.get("accounts", [])
+            cards = cards_data.get("cards", [])
+
+            if not isinstance(accounts, list):
+                accounts = []
+
+            if not isinstance(cards, list):
+                cards = []
+
+            for intent in intents:
                 try:
-                    # Call the MCP tool.
-                    tool_result = await session.call_tool(
-                        tool_name,
-                        arguments=arguments,
-                    )
+                    if intent == "check_balance":
+                        if len(accounts) == 0:
+                            raise ValueError("No active account is available.")
 
-                    if tool_result.is_error:
-                        errors.append(
-                            f"{intent}: the banking tool returned an error."
+                        if len(accounts) > 1:
+                            raise ValueError(
+                                "Multiple accounts found. Customer must specify an account."
+                            )
+
+                        result_data = await call_banking_tool(
+                            "get_account_balance",
+                            {
+                                "account_reference":
+                                    accounts[0]["account_reference"],
+                                "customer_id": customer_id,
+                            },
                         )
-                        continue
 
-                    # Convert the MCP text response into JSON.
-                    result_text = "\n".join(
-                        item.text # type: ignore
-                        for item in tool_result.content
-                        if hasattr(item, "text")
-                    )
+                    elif intent == "get_transactions":
+                        if len(cards) == 0:
+                            raise ValueError("No active card is available.")
 
-                    result_data = json.loads(result_text)
+                        if len(cards) > 1:
+                            raise ValueError(
+                                "Multiple cards found. Customer must specify a card."
+                            )
 
-                    # Don't treat tool-level errors as successful results.
-                    if (
-                        not isinstance(result_data, dict)
-                        or "error" in result_data
-                    ):
-                        errors.append(
-                            f"{intent}: the requested data could not be retrieved."
+                        result_data = await call_banking_tool(
+                            "get_card_transactions",
+                            {
+                                "card_reference":
+                                    cards[0]["card_reference"],
+                                "customer_id": customer_id,
+                                "limit": 10,
+                            },
                         )
+
+                    elif intent == "request_statement":
+                        if len(accounts) == 0:
+                            raise ValueError("No active account is available.")
+
+                        if len(accounts) > 1:
+                            raise ValueError(
+                                "Multiple accounts found. Customer must specify an account."
+                            )
+
+                        result_data = await call_banking_tool(
+                            "request_account_statement",
+                            {
+                                "account_reference":
+                                    accounts[0]["account_reference"],
+                                "customer_id": customer_id,
+                                "start_date": "2026-10-01",
+                                "end_date": "2026-10-17",
+                            },
+                        )
+
+                    else:
+                        errors.append(f"Unsupported intent: {intent}")
                         continue
 
                     tool_results.append({
@@ -226,18 +269,11 @@ async def supported_requests(state: EmailState) -> dict:
                         "data": result_data,
                     })
 
-                except (json.JSONDecodeError, ValueError) as exc:
-                    errors.append(
-                        f"{intent}: invalid response from the banking tool."
-                    )
-
                 except Exception:  # noqa: BLE001
-                    # Avoid exposing internal exception details to customers.
                     errors.append(
-                        f"{intent}: banking tool execution failed."
+                        f"{intent}: requested banking data could not be retrieved."
                     )
 
-    # Preserve successful results even if another request failed.
     if errors and tool_results:
         status = "partial_success"
     elif errors:

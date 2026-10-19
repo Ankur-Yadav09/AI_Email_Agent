@@ -45,3 +45,13 @@ class EmailState(BaseModel):
         default="",
         description="Reviewer's feedback or reason for rejection."
     )
+
+    sender_email: str | None = Field(
+        default=None,
+        description="Sender email associated with the incoming message."
+    )
+
+    verified_customer_id: str | None = Field(
+        default=None,
+        description="Customer ID resolved by the backend identity lookup."
+    )

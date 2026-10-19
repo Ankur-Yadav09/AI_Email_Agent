@@ -198,6 +198,63 @@ def request_account_statement(
         "status": "submitted",
     }
 
+# --------------------------------------------------
+# TOOL 4: Get accounts owned by a customer
+# --------------------------------------------------
+@mcp.tool()
+def get_customer_accounts(customer_id: str) -> dict:
+    """Return account references belonging to the specified customer."""
+
+    with get_connection() as connection:
+        accounts = connection.execute(
+            """
+            SELECT account_number, currency, status
+            FROM accounts
+            WHERE customer_id = ?
+              AND status = 'ACTIVE'
+            """,
+            (customer_id,),
+        ).fetchall()
+
+    return {
+        "accounts": [
+            {
+                "account_reference": row["account_number"],
+                "currency": row["currency"],
+                "status": row["status"],
+            }
+            for row in accounts
+        ]
+    }
+
+
+# --------------------------------------------------
+# TOOL 5: Get cards owned by a customer
+# --------------------------------------------------
+@mcp.tool()
+def get_customer_cards(customer_id: str) -> dict:
+    """Return card references belonging to the specified customer."""
+
+    with get_connection() as connection:
+        cards = connection.execute(
+            """
+            SELECT masked_card_number, status
+            FROM cards
+            WHERE customer_id = ?
+              AND status = 'ACTIVE'
+            """,
+            (customer_id,),
+        ).fetchall()
+
+    return {
+        "cards": [
+            {
+                "card_reference": row["masked_card_number"],
+                "status": row["status"],
+            }
+            for row in cards
+        ]
+    }
 
 # Start the MCP server using the default stdio transport when this file is run directly.
 if __name__ == "__main__":

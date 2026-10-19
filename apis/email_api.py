@@ -3,7 +3,10 @@ import logging
 import uuid
 
 from fastapi import APIRouter, HTTPException, Request, status
+from httpcore2 import request
 from langgraph.types import Command
+
+from utils.database import get_connection
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +22,28 @@ from utils.email_database import (
     update_email_record,
 )
 
+
+def resolve_customer_id(sender_email: str | None) -> str | None:
+    """Resolve a sender email using the registered customer records."""
+
+    if not sender_email:
+        return None
+
+    with get_connection() as connection:
+        customer = connection.execute(
+            """
+            SELECT customer_id
+            FROM customers
+            WHERE email = ?
+            """,
+            (sender_email.strip().lower(),),
+        ).fetchone()
+
+    if customer is None:
+        return None
+
+    return customer["customer_id"]
+
 router = APIRouter(prefix="/emails", tags=["Email Agent"])
 
 @router.post("/process", response_model=EmailProcessResponse)
@@ -31,6 +56,15 @@ async def process_email(
     The workflow may pause for human review.
     No email is sent by this endpoint.
     """
+
+    # Resolve the sender to a registered customer.
+    customer_id = resolve_customer_id(request.sender_email)
+
+    if customer_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Sender identity could not be verified.",
+        )
 
     # Get the persistent workflow initialized by main.py.
     workflow = http_request.app.state.email_workflow
@@ -49,7 +83,11 @@ async def process_email(
 
     try:
         result = await workflow.ainvoke(
-            {"email_text": request.email_text},
+            {
+                "email_text": request.email_text,
+                "sender_email": str(request.sender_email).strip().lower(),
+                "verified_customer_id": customer_id,
+            },
             config=config,
         )
 

@@ -1,5 +1,5 @@
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 
 
 class EmailProcessRequest(BaseModel):
@@ -9,6 +9,11 @@ class EmailProcessRequest(BaseModel):
         min_length=1,
         max_length=20000,
         description="The original email received from the customer."
+    )
+
+    sender_email: EmailStr | None = Field(
+        default=None,
+        description="Sender email supplied by the email ingestion layer."
     )
 
 
