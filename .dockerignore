@@ -1,0 +1,27 @@
+.git/
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.vscode/
+.idea/
+.claude/
+
+# secrets and runtime data (passed in at run time, never baked into the image)
+.env
+.env.*
+*.db
+logs/
+data/inbox/
+data/attachments/
+
+# not needed in the running image
+tests/
+docs/
+Problem_Statement.pdf
+CHECKLIST.md
+steps.txt
+document.txt
+*.png
+Dockerfile
+docker-compose.yml

@@ -1,88 +1,82 @@
-
 import asyncio
-import sys
-from pathlib import Path
+import uuid
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
+import pytest
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
-from agents.email_workflow import email_workflow
+import agents.email_workflow as wf
 
 
-async def main():
-    config = {
-        "configurable": {
-            "thread_id": "email-demo-001"
-        }
-    }
+@pytest.fixture
+def workflow(monkeypatch):
+    """Workflow with the LLM mocked; banking tools are the real local MCP server."""
+    monkeypatch.setattr(
+        wf, "identify_intent",
+        lambda text, attachment_text="": {
+            "intents": ["check_balance"],
+            "sentiment": "neutral",
+            "entities": {"account_number": "1234567890"},
+        },
+    )
+    return wf.build_email_workflow(MemorySaver())
 
-    # Start the workflow. It should pause at human_review.
-    result = await email_workflow.ainvoke(
+
+def start(workflow):
+    config = {"configurable": {"thread_id": f"review-{uuid.uuid4()}"}}
+    result = asyncio.run(workflow.ainvoke(
         {
-            "email_text": (
-                "Hello, please check my account balance."
-            )
-        }, # type: ignore
-        config=config, # type: ignore
+            "email_text": "Balance for account 1234567890?",
+            "sender_email": "demo@example.com",
+            "verified_customer_id": "CUST001",
+        },
+        config=config,
+    ))
+    return config, result
+
+
+def test_pauses_for_review_with_draft(workflow):
+    _, result = start(workflow)
+    interrupt = result["__interrupt__"][0].value
+    assert interrupt["type"] == "email_draft_review"
+    assert "Available Balance: INR 25,000.00" in interrupt["draft"]
+
+
+def test_approve_with_edit(workflow):
+    config, _ = start(workflow)
+    final = asyncio.run(workflow.ainvoke(
+        Command(resume={"approved": True, "edited_draft": "Edited by reviewer", "feedback": "ok"}),
+        config=config,
+    ))
+    assert final["approval_status"] == "approved"
+    assert final["draft"] == "Edited by reviewer"
+
+
+def test_reject(workflow):
+    config, _ = start(workflow)
+    final = asyncio.run(workflow.ainvoke(
+        Command(resume={"approved": False, "feedback": "wrong tone"}),
+        config=config,
+    ))
+    assert final["approval_status"] == "rejected"
+    assert final["reviewer_feedback"] == "wrong tone"
+
+
+def test_urgent_sentiment_sets_tone_and_high_priority(monkeypatch):
+    monkeypatch.setattr(
+        wf, "identify_intent",
+        lambda text, attachment_text="": {"intents": ["check_balance"], "sentiment": "urgent",
+                      "entities": {"account_number": "1234567890"}},
     )
+    workflow = wf.build_email_workflow(MemorySaver())
 
-    # Display the interrupt payload returned by LangGraph.
-    interrupts = result.get("__interrupt__", [])
+    _, result = start(workflow)
 
-    if not interrupts:
-        print("Workflow did not pause for human review.")
-        print("Current result:", result)
-        return
-
-    review_request = interrupts[0].value
-
-    print("\n========== HUMAN REVIEW ==========")
-    print("\nOriginal email:")
-    print(review_request["original_email"])
-
-    print("\nGenerated draft:")
-    print(review_request["draft"])
-
-    print("\n1. Approve")
-    print("2. Reject")
-
-    choice = input("\nEnter your choice (1/2): ").strip()
-
-    if choice == "1":
-        feedback = input("Optional review feedback: ").strip()
-
-        decision = {
-            "approved": True,
-            "feedback": feedback,
-        }
-
-    elif choice == "2":
-        feedback = input("Reason for rejection: ").strip()
-
-        decision = {
-            "approved": False,
-            "feedback": feedback or "Draft rejected by reviewer.",
-        }
-
-    else:
-        print("Invalid choice. Workflow remains paused.")
-        return
-
-    # Resume the SAME workflow execution with the review decision.
-    final_result = await email_workflow.ainvoke(
-        Command(resume=decision),
-        config=config, # type: ignore
-    )
-
-    print("\n========== REVIEW RESULT ==========")
-    print("Approval status:", final_result.get("approval_status"))
-    print("Workflow status:", final_result.get("status"))
-    print("Draft:", final_result.get("draft"))
-    print("Feedback:", final_result.get("reviewer_feedback"))
+    interrupt = result["__interrupt__"][0].value
+    assert "We understand that this is urgent." in interrupt["draft"]
+    assert (interrupt["sentiment"], interrupt["priority"]) == ("urgent", "high")
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
+def test_neutral_sentiment_adds_no_tone_rule_and_normal_priority(workflow, monkeypatch):
+    _, result = start(workflow)
+    assert result["__interrupt__"][0].value["priority"] == "normal"

@@ -9,13 +9,33 @@ wheels/
 # Virtual environments
 .venv/
 
-# Environment variables and secrets
+# Environment variables and secrets (keep the template, never the real file)
 .env
+.env.*
+!.env.example
 
-# IDE
+# IDE and tool folders
 .vscode/
+.idea/
+.claude/
+.pytest_cache/
+.ruff_cache/
+.DS_Store
 
 # database files
 banking.db
 email.db
-email_checkpoint.db
+email_checkpoints.db
+
+# runtime data: logs, mailbox, saved attachments
+logs/*.log*
+data/inbox/
+data/attachments/
+data/
+scripts/
+
+# internal documents, not for the repo
+Problem_Statement.pdf
+steps.txt
+document.txt
+CHECKLIST.md

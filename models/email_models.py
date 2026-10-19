@@ -62,3 +62,4 @@ class EmailReviewResponse(BaseModel):
     email_id: str
     status: str
     message: str
+    delivery_status: str = "not_sent"

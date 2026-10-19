@@ -1,9 +1,11 @@
 
+import os
 import sqlite3
 from pathlib import Path
 
-# Store the database file in the project root.
-DATABASE_PATH = Path(__file__).resolve().parent.parent / "banking.db"
+# DATA_DIR (default: the project root) holds all SQLite files; tests and Docker point it elsewhere.
+DATA_DIR = Path(os.environ.get("DATA_DIR") or Path(__file__).resolve().parent.parent)
+DATABASE_PATH = DATA_DIR / "banking.db"
 
 
 def get_connection():

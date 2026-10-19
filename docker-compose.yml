@@ -1,0 +1,41 @@
+services:
+  ollama:
+    image: ollama/ollama
+    volumes:
+      - ollama_models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      retries: 20
+
+  # One-shot: downloads the model into the ollama_models volume, then exits.
+  ollama-pull:
+    image: ollama/ollama
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["ollama", "pull", "llama3.2:1b"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - path: .env
+        required: false   # mailbox settings; see .env.example
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      DATA_DIR: /data   # databases live in the app_data volume and survive rebuilds
+    volumes:
+      - app_data:/data
+      - ./logs:/app/logs
+    depends_on:
+      ollama-pull:
+        condition: service_completed_successfully
+
+volumes:
+  ollama_models:
+  app_data:

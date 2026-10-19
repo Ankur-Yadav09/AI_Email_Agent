@@ -1,6 +1,9 @@
 import asyncio
 import json
+import logging
+import os
 import pathlib
+import time
 import sys
 
 # Get the root directory of the AI_Email_Agent project.
@@ -11,6 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 from mcp import ClientSession, StdioServerParameters
@@ -18,15 +22,36 @@ from mcp.client.stdio import stdio_client
 
 # Reuse the classifier you have already tested.
 from agents.email_agent import identify_intent
-from models.email_state import EmailState
+from models.email_state import EmailState, priority_for
 
 # Import our existing LLM function.
-from utils.llm_client import generate_response
+from utils.logging_config import audit
+from utils.reply_builder import build_reply
+
+logger = logging.getLogger(__name__)
+
+# A hung banking service must not hang the whole request.
+TOOL_TIMEOUT_SECONDS = 15
+# Read-only tools are retried once on timeout. A statement request writes a row,
+# so retrying it could create a duplicate.
+RETRY_ON_TIMEOUT = 1
+NEVER_RETRY = {"request_account_statement"}
+
+
+class ToolTimeout(ValueError):
+    """Raised when a banking tool does not answer in time. The message is customer-safe."""
+
+
+def _thread_id(config) -> str | None:
+    """The email_id, used to correlate every audit line of one email."""
+    return ((config or {}).get("configurable") or {}).get("thread_id")
 
 # Launch the existing MCP server as a separate process.
 server_params = StdioServerParameters(
     command=sys.executable,
     args=[str(PROJECT_ROOT / "agents" / "mcp_server.py")],
+    # The server process only gets a minimal environment, so pass the data location (and nothing secret).
+    env={"DATA_DIR": os.environ["DATA_DIR"]} if os.environ.get("DATA_DIR") else None,
 )
 
 
@@ -58,17 +83,22 @@ def receive_email(state: EmailState) -> dict:
 # 3. Node: Classify the customer's request
 # --------------------------------------------------
 
-def classify_email(state: EmailState):
-    print("\nDEBUG - Original email received:")
-    print(repr(state.email_text)) # type: ignore
+def classify_email(state: EmailState, config: RunnableConfig = None):  # type: ignore[assignment]
+    result = identify_intent(state.email_text, state.attachment_text) # type: ignore
 
-    result = identify_intent(state.email_text) # type: ignore
-
-    print("\nDEBUG - Classifier result:")
-    print(result)
+    audit(
+        "classified",
+        email_id=_thread_id(config),
+        intents=result.get("intents", []),
+        sentiment=result.get("sentiment"),
+        entities=result.get("entities"),
+        error=result.get("error"),
+    )
 
     return {
         "intents": result.get("intents", []),
+        "sentiment": result.get("sentiment", "neutral"),
+        "entities": result.get("entities", {}),
         "errors": (
             [result["error"]] if result.get("error") else []
         ),
@@ -99,6 +129,10 @@ def route_request(state: EmailState) -> str:
 
     return "supported"
 
+
+# --------------------------------------------------
+# 5. Node: Handle unsupported requests
+# --------------------------------------------------
 def handle_unsupported(state: EmailState):
     return {
         "draft": (
@@ -110,10 +144,6 @@ def handle_unsupported(state: EmailState):
         ),
         "status": "unsupported",
     }
-# --------------------------------------------------
-# 5. Node: Handle unsupported requests
-# --------------------------------------------------
-
 
 
 
@@ -122,7 +152,7 @@ def handle_unsupported(state: EmailState):
 # --------------------------------------------------
 
 
-async def supported_requests(state: EmailState) -> dict:
+async def supported_requests(state: EmailState, config: RunnableConfig = None) -> dict:  # type: ignore[assignment]
     """Execute supported requests using customer-specific MCP tools."""
 
     customer_id = state.verified_customer_id
@@ -135,8 +165,10 @@ async def supported_requests(state: EmailState) -> dict:
         }
 
     intents = state.intents
+    entities = state.entities
     tool_results = []
     errors = []
+    customer_name = ""
 
     async with stdio_client(server_params) as (read, write):  # noqa: SIM117
         async with ClientSession(read, write) as session:
@@ -152,9 +184,34 @@ async def supported_requests(state: EmailState) -> dict:
                         f"Required MCP tool '{tool_name}' is unavailable."
                     )
 
-                result = await session.call_tool(
-                    tool_name,
+                attempts = 1 if tool_name in NEVER_RETRY else 1 + RETRY_ON_TIMEOUT
+                for attempt in range(1, attempts + 1):
+                    started = time.perf_counter()
+                    try:
+                        result = await asyncio.wait_for(
+                            session.call_tool(tool_name, arguments=arguments),
+                            timeout=TOOL_TIMEOUT_SECONDS,
+                        )
+                        break
+                    except asyncio.TimeoutError:
+                        audit(
+                            "tool_timeout",
+                            email_id=_thread_id(config),
+                            tool=tool_name,
+                            attempt=attempt,
+                        )
+                        if attempt == attempts:
+                            raise ToolTimeout(
+                                "The banking service did not respond in time. "
+                                "Please try again later."
+                            ) from None
+                audit(
+                    "tool_call",
+                    email_id=_thread_id(config),
+                    tool=tool_name,
                     arguments=arguments,
+                    is_error=result.is_error,
+                    ms=round((time.perf_counter() - started) * 1000),
                 )
 
                 if result.is_error:
@@ -172,6 +229,17 @@ async def supported_requests(state: EmailState) -> dict:
                     raise ValueError("Banking tool returned an error.")
 
                 return data
+
+            async def require_valid(tool_name: str, arguments: dict, label: str):
+                """Stop this intent with a customer-facing message if the number is invalid."""
+                nonlocal customer_name
+                check = await call_banking_tool(tool_name, arguments)
+                customer_name = check.get("customer_name") or customer_name
+                if check.get("status") != "VALID":
+                    raise ValueError(
+                        f"The {label} provided could not be validated. "
+                        f"Please recheck the {label.split()[0]} details and resend your request."
+                    )
 
             # Discover resources belonging to this customer.
             try:
@@ -201,78 +269,109 @@ async def supported_requests(state: EmailState) -> dict:
             if not isinstance(cards, list):
                 cards = []
 
-            for intent in intents:
+            async def run_intent(intent: str):
+                """Validate, then fetch, for one intent. Returns (intent, data, error)."""
                 try:
                     if intent == "check_balance":
-                        if len(accounts) == 0:
-                            raise ValueError("No active account is available.")
+                        account_ref = entities.get("account_number") or (
+                            accounts[0]["account_reference"]
+                            if len(accounts) == 1 else None
+                        )
+                        if not account_ref:
+                            raise ValueError("Account not specified.")
 
-                        if len(accounts) > 1:
-                            raise ValueError(
-                                "Multiple accounts found. Customer must specify an account."
-                            )
+                        await require_valid(
+                            "validate_account",
+                            {"account_number": account_ref, "customer_id": customer_id},
+                            "account number",
+                        )
 
                         result_data = await call_banking_tool(
                             "get_account_balance",
                             {
-                                "account_reference":
-                                    accounts[0]["account_reference"],
+                                "account_reference": account_ref,
                                 "customer_id": customer_id,
                             },
                         )
 
                     elif intent == "get_transactions":
-                        if len(cards) == 0:
-                            raise ValueError("No active card is available.")
+                        card_ref = entities.get("card_number") or (
+                            cards[0]["card_reference"]
+                            if len(cards) == 1 else None
+                        )
+                        if not card_ref:
+                            raise ValueError("Card not specified.")
 
-                        if len(cards) > 1:
-                            raise ValueError(
-                                "Multiple cards found. Customer must specify a card."
-                            )
+                        await require_valid(
+                            "validate_card",
+                            {"card_number": card_ref, "customer_id": customer_id},
+                            "card number",
+                        )
 
                         result_data = await call_banking_tool(
                             "get_card_transactions",
                             {
-                                "card_reference":
-                                    cards[0]["card_reference"],
+                                "card_reference": card_ref,
                                 "customer_id": customer_id,
-                                "limit": 10,
+                                "limit": entities.get("transaction_count") or 5,
                             },
                         )
 
                     elif intent == "request_statement":
-                        if len(accounts) == 0:
-                            raise ValueError("No active account is available.")
+                        account_ref = entities.get("account_number") or (
+                            accounts[0]["account_reference"]
+                            if len(accounts) == 1 else None
+                        )
+                        if not account_ref:
+                            raise ValueError("Account not specified.")
 
-                        if len(accounts) > 1:
-                            raise ValueError(
-                                "Multiple accounts found. Customer must specify an account."
-                            )
+                        await require_valid(
+                            "validate_account",
+                            {"account_number": account_ref, "customer_id": customer_id},
+                            "account number",
+                        )
+
+                        if not (entities.get("start_date") and entities.get("end_date")):
+                            raise ValueError("Statement period not specified.")
 
                         result_data = await call_banking_tool(
                             "request_account_statement",
                             {
-                                "account_reference":
-                                    accounts[0]["account_reference"],
+                                "account_reference": account_ref,
                                 "customer_id": customer_id,
-                                "start_date": "2026-10-01",
-                                "end_date": "2026-10-17",
+                                "start_date": entities["start_date"],
+                                "end_date": entities["end_date"],
                             },
                         )
 
                     else:
-                        errors.append(f"Unsupported intent: {intent}")
-                        continue
+                        return intent, None, f"Unsupported intent: {intent}"
 
-                    tool_results.append({
-                        "intent": intent,
-                        "data": result_data,
-                    })
+                    return intent, result_data, None
 
-                except Exception:  # noqa: BLE001
-                    errors.append(
-                        f"{intent}: requested banking data could not be retrieved."
+                except Exception as exc:  # noqa: BLE001
+                    # ValueError messages raised above are ours and safe to show.
+                    reason = (
+                        str(exc) if isinstance(exc, ValueError)
+                        else "requested banking data could not be retrieved."
                     )
+                    return intent, None, f"{intent}: {reason}"
+
+            # Intents are independent, so run them concurrently (order is preserved).
+            for intent, data, error in await asyncio.gather(
+                *(run_intent(i) for i in intents)
+            ):
+                if error:
+                    errors.append(error)
+                else:
+                    tool_results.append({"intent": intent, "data": data})
+
+    audit(
+        "requests_finished",
+        email_id=_thread_id(config),
+        succeeded=[r["intent"] for r in tool_results],
+        errors=errors,
+    )
 
     if errors and tool_results:
         status = "partial_success"
@@ -284,82 +383,34 @@ async def supported_requests(state: EmailState) -> dict:
     return {
         "tool_results": tool_results,
         "errors": errors,
+        "customer_name": customer_name,
         "status": status,
     }
 
 # --------------------------------------------------
-# 7. generate node for draft email using the LLM
+# 7. generate node for the draft email (fixed template, no LLM)
 # --------------------------------------------------
-def generate_draft(state: EmailState) -> dict:
+def generate_draft(state: EmailState, config: RunnableConfig = None) -> dict:  # type: ignore[assignment]
+    """Build the reply from the verified tool results.
+
+    A template, not the LLM, writes the reply, so names, amounts and numbers cannot be
+    invented or garbled (the 1B model once greeted a customer with their account number).
     """
-    Generate a customer email draft using the LLM.
 
-    The LLM uses the original email and the banking data
-    returned by our MCP tools. It must not invent facts.
-    """
-
-    email_text = state.email_text
-    intents = state.intents
-    tool_results = state.tool_results
-    errors = state.errors
-
-    # Do not generate a banking response if classification failed
-    # or the request is unsupported.
-    if not intents:
-        return {
-            "draft": (
-                "Dear Customer,\n\n"
-                "Thank you for contacting us. Your request is not "
-                "supported by our current automated service. "
-                "Please contact customer support for assistance.\n\n"
-                "Best regards,\nCustomer Support Team"
-            ),
-            "status": "unsupported",
-        }
-
-    # Provide the LLM with the original request and retrieved data.
-    prompt = f"""
-You are a professional banking customer-support email assistant.
-
-CUSTOMER EMAIL:
-{email_text}
-
-CLASSIFIED INTENTS:
-{json.dumps(intents)}
-
-VERIFIED BANKING TOOL RESULTS:
-{json.dumps(tool_results, indent=2)}
-
-TOOL ERRORS:
-{json.dumps(errors, indent=2)}
-
-RULES:
-- Answer only the customer's actual request.
-- Use only facts present in the verified tool results.
-- Never invent customer details, addresses, balances, transactions,
-  dates, or processing times.
-- Never claim an operation was completed unless an authorized tool
-  actually performed it and confirmed success.
-- If banking data is missing, explain that it could not be retrieved.
-- If a tool failed, do not pretend that it succeeded.
-- Do not reveal internal errors, credentials, or sensitive information.
-- Write a clear, polite, professional email with a subject.
-- Generate a draft only. Do not send the email.
-
-Return only the email draft.
-"""
+    if not state.intents:
+        return handle_unsupported(state)
 
     try:
-        # Call the existing Ollama LLM helper.
-        draft = generate_response(prompt)
-
-        return {
-            "draft": draft.strip(),
-            "status": "draft_generated",
-        }
-
-    except Exception as error:
-
+        draft = build_reply(
+            state.email_text,
+            state.customer_name,
+            state.tool_results,
+            state.errors,
+            state.sentiment,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("Draft generation failed")
+        audit("draft_failed", email_id=_thread_id(config))
         return {
             "draft": (
                 "Dear Customer,\n\n"
@@ -369,18 +420,28 @@ Return only the email draft.
                 "Best regards,\nCustomer Support Team"
             ),
             "status": "draft_generation_failed",
-            "errors": errors + ["Email draft generation failed."],
+            "errors": state.errors + ["Email draft generation failed."],
         }
 
+    audit(
+        "draft_generated",
+        email_id=_thread_id(config),
+        sentiment=state.sentiment,
+        priority=priority_for(state.sentiment),
+    )
+    return {"draft": draft, "status": "draft_generated"}
 
 
-def human_review(state: EmailState) -> dict:
+
+def human_review(state: EmailState, config: RunnableConfig = None) -> dict:  # type: ignore[assignment]
     """Pause execution until a human reviews the generated draft."""
 
     # Pause the workflow and expose the draft to the reviewer.
     decision = interrupt({
         "type": "email_draft_review",
         "original_email": state.email_text,
+        "sentiment": state.sentiment,
+        "priority": priority_for(state.sentiment),
         "draft": state.draft,
         "message": (
             "Review the draft. Approve it or reject it with feedback."
@@ -388,6 +449,12 @@ def human_review(state: EmailState) -> dict:
     })
 
     # The workflow resumes here after receiving a reviewer decision.
+    audit(
+        "human_review",
+        email_id=_thread_id(config),
+        approved=decision.get("approved") if isinstance(decision, dict) else None,
+        edited=bool(isinstance(decision, dict) and decision.get("edited_draft")),
+    )
     if not isinstance(decision, dict):
         return {
             "approval_status": "rejected",

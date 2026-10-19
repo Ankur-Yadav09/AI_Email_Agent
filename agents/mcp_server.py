@@ -256,6 +256,57 @@ def get_customer_cards(customer_id: str) -> dict:
         ]
     }
 
+# --------------------------------------------------
+# TOOL 6: Validate an account number
+# --------------------------------------------------
+@mcp.tool()
+def validate_account(account_number: str, customer_id: str) -> dict:
+    """Check that an active account exists and belongs to the customer."""
+
+    with get_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT c.name
+            FROM accounts a JOIN customers c USING (customer_id)
+            WHERE a.account_number = ?
+              AND a.customer_id = ?
+              AND a.status = 'ACTIVE'
+            """,
+            (account_number, customer_id),
+        ).fetchone()
+
+    # Someone else's account is reported as INVALID so its existence is not leaked.
+    if row is None:
+        return {"status": "INVALID"}
+
+    return {"status": "VALID", "customer_name": row["name"]}
+
+
+# --------------------------------------------------
+# TOOL 7: Validate a card number
+# --------------------------------------------------
+@mcp.tool()
+def validate_card(card_number: str, customer_id: str) -> dict:
+    """Check that an active card exists and belongs to the customer."""
+
+    with get_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT c.name
+            FROM cards k JOIN customers c USING (customer_id)
+            WHERE k.masked_card_number = ?
+              AND k.customer_id = ?
+              AND k.status = 'ACTIVE'
+            """,
+            (card_number, customer_id),
+        ).fetchone()
+
+    if row is None:
+        return {"status": "INVALID"}
+
+    return {"status": "VALID", "customer_name": row["name"]}
+
+
 # Start the MCP server using the default stdio transport when this file is run directly.
 if __name__ == "__main__":
     mcp.run()

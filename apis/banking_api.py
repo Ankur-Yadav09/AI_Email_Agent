@@ -12,6 +12,9 @@ from models.banking_models import (
     BalanceResponse,
     StatementResponse,
     TransactionsResponse,
+    ValidateAccountRequest,
+    ValidateCardRequest,
+    ValidationResponse,
 )
 from utils.database import (
     get_connection,  # Provides a database connection.
@@ -211,3 +214,45 @@ def request_account_statement(
         "statement_reference": statement_reference,
         "status": "REQUESTED",
     }
+
+
+@router.post("/accounts/validate", response_model=ValidationResponse)
+def validate_account(
+    body: ValidateAccountRequest,
+    customer_id: str = Header(alias="X-Demo-Customer-ID"),
+):
+    with get_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT c.name
+            FROM accounts a JOIN customers c USING (customer_id)
+            WHERE a.account_number = ? AND a.customer_id = ?
+              AND a.status = 'ACTIVE'
+            """,
+            (body.account_number, customer_id),
+        ).fetchone()
+
+    if row is None:
+        return {"status": "INVALID"}
+    return {"status": "VALID", "customer_name": row["name"]}
+
+
+@router.post("/cards/validate", response_model=ValidationResponse)
+def validate_card(
+    body: ValidateCardRequest,
+    customer_id: str = Header(alias="X-Demo-Customer-ID"),
+):
+    with get_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT c.name
+            FROM cards k JOIN customers c USING (customer_id)
+            WHERE k.masked_card_number = ? AND k.customer_id = ?
+              AND k.status = 'ACTIVE'
+            """,
+            (body.card_number, customer_id),
+        ).fetchone()
+
+    if row is None:
+        return {"status": "INVALID"}
+    return {"status": "VALID", "customer_name": row["name"]}

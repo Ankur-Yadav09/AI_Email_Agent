@@ -42,3 +42,16 @@ class StatementResponse(BaseModel):
     end_date: str = Field(description="End date of the statement period.")
     statement_reference: str = Field(description="Unique reference for the requested statement.")
     status: str = Field(description="Status of the statement request.")
+
+
+class ValidateAccountRequest(BaseModel):
+    account_number: str
+
+
+class ValidateCardRequest(BaseModel):
+    card_number: str
+
+
+class ValidationResponse(BaseModel):
+    status: str  # "VALID" or "INVALID"
+    customer_name: str | None = None

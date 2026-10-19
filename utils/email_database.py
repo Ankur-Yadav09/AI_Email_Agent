@@ -1,5 +1,6 @@
 
 import json
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -8,7 +9,7 @@ from typing import Any
 # Store email.db in the project's root directory.
 # This path works even when the application is launched from another directory.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATABASE_PATH = PROJECT_ROOT / "email.db"
+DATABASE_PATH = Path(os.environ.get("DATA_DIR") or PROJECT_ROOT) / "email.db"
 
 
 def get_connection():
@@ -37,18 +38,60 @@ def initialize_email_database():
             )
         """)
 
+        # Migration: add columns that older databases do not have yet.
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(email_records)")}
+        for name, definition in (
+            ("sentiment", "TEXT NOT NULL DEFAULT 'neutral'"),
+            ("sender_email", "TEXT"),
+            ("subject", "TEXT NOT NULL DEFAULT ''"),
+            ("message_id", "TEXT"),  # Message-ID header; used for threading and de-duplication
+            ("delivery_status", "TEXT NOT NULL DEFAULT 'not_sent'"),  # not_sent / sent / send_failed / ...
+        ):
+            if name not in columns:
+                connection.execute(f"ALTER TABLE email_records ADD COLUMN {name} {definition}")
 
-def create_email_record(email_id: str, email_text: str):
+
+def create_email_record(
+    email_id: str,
+    email_text: str,
+    sender_email: str | None = None,
+    subject: str = "",
+    message_id: str | None = None,
+):
     """Save a newly received email before processing begins."""
     now = datetime.now(timezone.utc).isoformat()  # noqa: UP017
 
     with get_connection() as connection:
         connection.execute("""
             INSERT INTO email_records (
-                email_id, email_text, created_at, updated_at
+                email_id, email_text, sender_email, subject, message_id,
+                created_at, updated_at
             )
-            VALUES (?, ?, ?, ?)
-        """, (email_id, email_text, now, now))
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (email_id, email_text, sender_email, subject, message_id, now, now))
+
+
+def list_email_records(status: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+    """The most recent emails (optionally one status), summarised for a work queue."""
+    query = "SELECT email_id, status, subject, sender_email, sentiment, created_at FROM email_records"
+    params: list[Any] = []
+    if status:
+        query += " WHERE status = ?"
+        params.append(status)
+    query += " ORDER BY created_at DESC LIMIT ?"
+    params.append(limit)
+
+    with get_connection() as connection:
+        return [dict(row) for row in connection.execute(query, params).fetchall()]
+
+
+def email_id_for_message_id(message_id: str) -> str | None:
+    """The email_id already created for this Message-ID header, if any."""
+    with get_connection() as connection:
+        row = connection.execute(
+            "SELECT email_id FROM email_records WHERE message_id = ?", (message_id,)
+        ).fetchone()
+    return row["email_id"] if row else None
 
 
 def get_email_record(email_id: str) -> dict[str, Any] | None:
@@ -81,6 +124,8 @@ def update_email_record(email_id: str, **fields):
         "errors",
         "approval_status",
         "reviewer_feedback",
+        "sentiment",
+        "delivery_status",
     }
 
     updates = {}
