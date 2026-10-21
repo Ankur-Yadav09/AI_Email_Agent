@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from agents.email_workflow import build_email_workflow
@@ -48,6 +49,9 @@ async def lifespan(app: FastAPI):
     until the application shuts down.
     """
 
+    if not os.environ.get("REVIEWER_TOKEN"):
+        logger.warning("REVIEWER_TOKEN is not set: anyone who can reach this port can approve and send replies.")
+
     # Initialize the existing banking and email databases.
     initialize_database()
     initialize_email_database()
@@ -89,6 +93,12 @@ app = FastAPI(
 # Register existing API routers.
 app.include_router(email_router)
 app.include_router(banking_router)
+
+
+@app.get("/ui", include_in_schema=False)
+def reviewer_console():
+    """The reviewer console. The page itself holds no data; its API calls need the reviewer token."""
+    return FileResponse(PROJECT_ROOT / "ui" / "index.html")
 
 
 @app.get("/health")

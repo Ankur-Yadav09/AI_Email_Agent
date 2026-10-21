@@ -2,6 +2,7 @@
 
 Facts (names, amounts, numbers) never pass through an LLM, so they cannot be invented or garbled.
 """
+import os
 import re
 from datetime import date
 
@@ -26,7 +27,8 @@ CLARIFICATIONS = {
     "Card not specified.": "We could not tell which card you mean. Please reply with your card number.",
     "Statement period not specified.": "Please tell us the period you need, for example April 2026.",
 }
-GENERIC_FAILURE = "We were unable to retrieve this information right now. Please try again later or contact customer support."
+DEFAULT_SUPPORT_TEXT = "Please contact customer support for assistance."
+GENERIC_FAILURE ="We were unable to retrieve this information right now. Please try again later or contact customer support."
 
 
 def inr(amount, currency: str = "INR") -> str:
@@ -120,4 +122,36 @@ def build_reply(
             lines += [GENERIC_FAILURE, ""]
 
     lines += ["Thank you,", "Customer Support Team"]
+    return mask_text("\n".join(lines))
+
+
+def support_text() -> str:
+    """Tells a customer where to go when we cannot complete their request by email.
+
+    Set SUPPORT_CONTACT_TEXT to the client's real channel, e.g. "Please log in to net banking or call 1800-XXX-XXXX."
+    """
+    return " ".join((os.environ.get("SUPPORT_CONTACT_TEXT") or DEFAULT_SUPPORT_TEXT).split())
+
+
+def build_handoff_reply(email_text: str, customer_name: str, sentiment: str = "neutral") -> str:
+    """Draft for a request the system cannot complete (out of scope, or the email could not be read).
+
+    It only states what is true and points to the support channel. It promises nothing.
+    """
+    subject = original_subject(email_text)
+    lines = [
+        f"Subject: {'Re: ' + subject if subject else 'Your request'}",
+        "",
+        f"Dear {customer_name or 'Customer'},",
+        "",
+    ]
+    if sentiment in TONE_LINES:
+        lines += [TONE_LINES[sentiment], ""]
+    lines += [
+        "Thank you for contacting us. We are unable to complete this request automatically.",
+        support_text(),
+        "",
+        "Thank you,",
+        "Customer Support Team",
+    ]
     return mask_text("\n".join(lines))

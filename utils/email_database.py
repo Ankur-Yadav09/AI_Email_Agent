@@ -73,7 +73,7 @@ def create_email_record(
 
 def list_email_records(status: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
     """The most recent emails (optionally one status), summarised for a work queue."""
-    query = "SELECT email_id, status, subject, sender_email, sentiment, created_at FROM email_records"
+    query = "SELECT email_id, status, subject, sender_email, sentiment, intents, delivery_status, created_at FROM email_records"
     params: list[Any] = []
     if status:
         query += " WHERE status = ?"

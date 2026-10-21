@@ -1,9 +1,13 @@
 
 import asyncio
+import hmac
+import json
 import logging
+import os
 import uuid
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Security, status
+from fastapi.security import APIKeyHeader
 from langgraph.types import Command
 
 from models.email_state import priority_for
@@ -50,7 +54,30 @@ def resolve_customer_id(sender_email: str | None) -> str | None:
 
     return customer["customer_id"]
 
-router = APIRouter(prefix="/emails", tags=["Email Agent"])
+
+def customer_name_of(customer_id: str) -> str:
+    """For the greeting, even when no banking tool runs (hand-off replies)."""
+    with get_connection() as connection:
+        row = connection.execute("SELECT name FROM customers WHERE customer_id = ?", (customer_id,)).fetchone()
+    return row["name"] if row else ""
+
+
+_token_header = APIKeyHeader(name="X-Reviewer-Token", auto_error=False)
+
+
+def require_token(token: str | None = Security(_token_header)) -> None:
+    """Every /emails endpoint needs the reviewer token, because approving sends real email.
+
+    With REVIEWER_TOKEN unset the API stays open (development); main.py warns about it at startup.
+    """
+    expected = os.environ.get("REVIEWER_TOKEN")
+    if not expected:
+        return
+    if not token or not hmac.compare_digest(token.encode(), expected.encode()):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing or invalid reviewer token.")
+
+
+router = APIRouter(prefix="/emails", tags=["Email Agent"], dependencies=[Depends(require_token)])
 
 @router.post("/process", response_model=EmailProcessResponse)
 async def process_email(
@@ -117,6 +144,7 @@ async def run_email(
                 "attachment_text": attachment_text,
                 "sender_email": str(sender_email).strip().lower(),
                 "verified_customer_id": customer_id,
+                "customer_name": customer_name_of(customer_id),
             },
             config=config,
         )
@@ -279,6 +307,8 @@ async def list_emails(
     emails = list_email_records(status_filter, limit)
     for record in emails:
         record["priority"] = priority_for(record.pop("sentiment"))
+        # no recognised request: nothing was looked up, so a person has to answer
+        record["needs_person"] = not json.loads(record.pop("intents"))
     emails.sort(key=lambda e: (e["priority"] != "high", e["created_at"]))
     return {"count": len(emails), "emails": emails}
 
@@ -343,6 +373,16 @@ async def review_email(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="An edited draft can only be submitted with approval.",
+        )
+
+    # Only resume a workflow that is really paused for review. Without its saved state (for example
+    # the checkpoint database was lost), resuming would silently restart the workflow from scratch
+    # and overwrite this record.
+    snapshot = await workflow.aget_state({"configurable": {"thread_id": email_id}})
+    if not snapshot.next:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This email's saved workflow state is missing, so it cannot be resumed. Submit the email again.",
         )
 
     # 4. Prepare the decision to resume the interrupted graph.

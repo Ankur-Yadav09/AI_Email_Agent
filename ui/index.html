@@ -1,0 +1,585 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reviewer Console</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    --bg: #f4f6fa; --panel: #ffffff; --text: #18202f; --muted: #5d6676; --line: #dfe3ea; --soft: #f0f3f8;
+    --accent: #1f5fbf; --accent-text: #ffffff; --accent-soft: #e6eefb;
+    --red: #b3261e; --red-soft: #fdecea; --amber: #8a5a00; --amber-soft: #fff4d6; --green: #1e7a3c; --green-soft: #e3f5e9;
+    --shadow: 0 1px 2px rgba(20, 30, 50, .06), 0 4px 16px rgba(20, 30, 50, .06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1118; --panel: #171b24; --text: #e8ebf1; --muted: #9ba4b4; --line: #2a303d; --soft: #1e232e;
+      --accent: #6ea3ff; --accent-text: #0b1220; --accent-soft: #1b2a47;
+      --red: #ff8a80; --red-soft: #3a1f1d; --amber: #f4c05a; --amber-soft: #3a2f14; --green: #6fd08c; --green-soft: #17301f;
+      --shadow: none;
+    }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  button, input, textarea { font: inherit; color: inherit; }
+  button { padding: 7px 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); cursor: pointer; }
+  button:hover:not(:disabled) { background: var(--soft); }
+  button:disabled { opacity: .55; cursor: not-allowed; }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
+  button.primary:hover:not(:disabled) { filter: brightness(1.08); background: var(--accent); }
+  button.danger { color: var(--red); border-color: var(--red); }
+  button.ghost { border-color: transparent; background: transparent; color: var(--muted); }
+  button.link { border: 0; background: none; padding: 0; color: var(--accent); text-decoration: underline; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  input, textarea { width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); }
+  input[readonly], textarea[readonly] { background: var(--soft); }
+  textarea { font-family: ui-monospace, Consolas, monospace; font-size: 13.5px; line-height: 1.5; resize: vertical; }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 12px 0 4px; }
+  h2 { font-size: 20px; margin: 0; overflow-wrap: anywhere; }
+  h3 { font-size: 13px; margin: 0 0 6px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .muted { color: var(--muted); font-size: 13px; }
+
+  /* top bar */
+  .top { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 20px; background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; }
+  .brand { font-weight: 700; font-size: 17px; margin-right: auto; }
+  .brand small { font-weight: 400; color: var(--muted); margin-left: 8px; }
+
+  /* layout */
+  main { display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 20px; max-width: 1280px; margin: 0 auto; padding: 20px; align-items: start; }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; padding: 16px; } .top { padding: 10px 16px; } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); }
+
+  /* list */
+  .tabs { display: flex; border-bottom: 1px solid var(--line); }
+  .tabs button { flex: 1; border: 0; border-radius: 12px 12px 0 0; background: none; padding: 12px 8px; color: var(--muted); border-bottom: 2px solid transparent; }
+  .tabs button[aria-selected="true"] { color: var(--text); font-weight: 600; border-bottom-color: var(--accent); }
+  .count { display: inline-block; min-width: 20px; padding: 0 6px; border-radius: 999px; background: var(--accent); color: var(--accent-text); font-size: 12px; line-height: 20px; }
+  .count:empty { display: none; }
+  #list { list-style: none; margin: 0; padding: 8px; max-height: calc(100vh - 170px); overflow: auto; }
+  #list li button { display: block; width: 100%; text-align: left; border: 1px solid transparent; background: none; border-radius: 10px; padding: 10px 12px; margin-bottom: 2px; }
+  #list li button:hover { background: var(--soft); }
+  #list li button[aria-current="true"] { background: var(--accent-soft); border-color: var(--accent); }
+  .row-top { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .subject { font-weight: 600; overflow-wrap: anywhere; }
+  .empty { padding: 28px 20px; text-align: center; color: var(--muted); }
+  .empty strong { display: block; color: var(--text); font-size: 17px; margin-bottom: 4px; }
+  .empty button { margin-top: 14px; }
+
+  /* chips */
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 4px; }
+  .chip { display: inline-block; padding: 1px 10px; border-radius: 999px; font-size: 12.5px; background: var(--soft); color: var(--muted); border: 1px solid var(--line); }
+  .chip.urgent { background: var(--red-soft); color: var(--red); border-color: transparent; font-weight: 600; }
+  .chip.warn { background: var(--amber-soft); color: var(--amber); border-color: transparent; }
+  .chip.ok { background: var(--green-soft); color: var(--green); border-color: transparent; }
+  .chip.info { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+
+  /* detail */
+  #detail-panel { padding: 22px 24px; min-height: 360px; }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 18px; }
+  @media (max-width: 1050px) { .cols { grid-template-columns: 1fr; } }
+  pre.email { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; padding: 12px 14px; background: var(--soft); border-radius: 10px; border: 1px solid var(--line); font: 14px/1.55 system-ui, sans-serif; max-height: 380px; overflow: auto; }
+  .notice { border-radius: 10px; padding: 10px 14px; margin-top: 16px; }
+  .notice ul { margin: 6px 0 0; padding-left: 20px; }
+  .notice.warn { background: var(--amber-soft); color: var(--amber); }
+  .notice.ok { background: var(--green-soft); color: var(--green); }
+  .notice.bad { background: var(--red-soft); color: var(--red); }
+  .notice.plain { background: var(--soft); color: var(--text); }
+  .actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line); }
+  .edited-row { min-height: 22px; margin-top: 6px; }
+
+  /* dialogs and toasts */
+  dialog { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); color: var(--text); padding: 22px; width: min(560px, calc(100vw - 32px)); box-shadow: 0 12px 48px rgba(0, 0, 0, .35); }
+  dialog::backdrop { background: rgba(10, 14, 22, .55); }
+  dialog h2 { font-size: 18px; margin-bottom: 4px; }
+  dialog pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto; margin: 10px 0; padding: 10px 12px; background: var(--soft); border: 1px solid var(--line); border-radius: 8px; font: 13px/1.5 ui-monospace, Consolas, monospace; }
+  dialog .actions { border-top: 0; padding-top: 0; justify-content: flex-end; }
+  #toasts { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 20; max-width: min(420px, calc(100vw - 32px)); }
+  .toast { padding: 10px 14px; border-radius: 10px; background: var(--text); color: var(--bg); box-shadow: var(--shadow); cursor: pointer; }
+  .toast.ok { background: var(--green); color: #fff; } .toast.error { background: var(--red); color: #fff; }
+  @media (prefers-color-scheme: dark) { .toast.ok, .toast.error { color: #0b1220; } }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand">Reviewer Console<small>approve replies before they are sent</small></div>
+  <span id="updated" class="muted" aria-live="off"></span>
+  <button id="refresh" class="ghost" title="Reload the lists">Refresh</button>
+  <button id="poll" title="Look for new customer emails in the mailbox">Check mailbox</button>
+  <button id="new-test" title="Try the agent without Gmail">New test email</button>
+  <button id="signout" class="ghost" hidden>Sign out</button>
+</header>
+
+<main>
+  <aside class="card" aria-label="Emails">
+    <div class="tabs" role="tablist">
+      <button role="tab" id="tab-pending" aria-selected="true">Needs review <span id="count-pending" class="count"></span></button>
+      <button role="tab" id="tab-history" aria-selected="false">History</button>
+    </div>
+    <ul id="list"></ul>
+  </aside>
+
+  <section class="card" id="detail-panel" aria-label="Review">
+    <div id="empty" class="empty"></div>
+    <div id="detail" hidden>
+      <h2 id="d-subject"></h2>
+      <div id="d-chips" class="chips"></div>
+      <div id="d-meta" class="muted"></div>
+
+      <div id="d-outcome" class="notice" hidden></div>
+      <div id="d-manual" class="notice warn" hidden>
+        <strong>Not handled automatically.</strong>
+        <span id="d-manual-text"></span>
+      </div>
+      <div id="d-issues" class="notice warn" hidden>
+        <strong>The system could not do everything</strong>
+        <ul id="d-issue-list"></ul>
+        <div class="muted">The draft already tells the customer what to fix.</div>
+      </div>
+
+      <div class="cols">
+        <div>
+          <h3>Customer wrote</h3>
+          <pre id="d-email" class="email"></pre>
+        </div>
+        <div>
+          <h3>Reply</h3>
+          <label for="r-to">To</label>
+          <input id="r-to" readonly>
+          <label for="r-subject">Subject</label>
+          <input id="r-subject" maxlength="200">
+          <label for="r-body">Message</label>
+          <textarea id="r-body" rows="14"></textarea>
+          <div class="edited-row"><span id="d-edited" class="chip warn" hidden>You edited this reply</span> <button id="d-reset" class="link" hidden>Reset to original</button></div>
+        </div>
+      </div>
+
+      <div class="actions" id="d-actions">
+        <button id="approve" class="primary">Approve &amp; send</button>
+        <button id="reject" class="danger">Reject</button>
+        <span class="muted">Nothing is emailed until you approve.</span>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div id="toasts" role="status" aria-live="polite"></div>
+
+<dialog id="dlg-send" aria-labelledby="send-title">
+  <h2 id="send-title">Send this reply?</h2>
+  <div class="muted" id="send-to"></div>
+  <pre id="send-preview"></pre>
+  <div id="send-edited" class="chip warn" hidden>Includes your edits</div>
+  <div class="actions">
+    <button id="send-cancel">Cancel</button>
+    <button id="send-confirm" class="primary">Send reply</button>
+  </div>
+</dialog>
+
+<dialog id="dlg-reject" aria-labelledby="reject-title">
+  <h2 id="reject-title">Reject this reply?</h2>
+  <div class="muted">Nothing will be sent to the customer.</div>
+  <label for="reject-reason">Reason (optional, kept in the record)</label>
+  <input id="reject-reason" maxlength="500">
+  <div class="actions" style="margin-top:16px">
+    <button id="reject-cancel">Cancel</button>
+    <button id="reject-confirm" class="danger">Reject reply</button>
+  </div>
+</dialog>
+
+<dialog id="dlg-test" aria-labelledby="test-title">
+  <h2 id="test-title">New test email</h2>
+  <div class="muted">Runs the full agent without Gmail. Nothing is sent until you approve it.</div>
+  <label for="t-sender">From (must be a registered customer)</label>
+  <input id="t-sender" value="demo@example.com">
+  <label for="t-text">Email</label>
+  <textarea id="t-text" rows="5">Subject: Balance Enquiry
+
+Please share my balance for account 1234567890.</textarea>
+  <div class="actions" style="margin-top:16px">
+    <button id="test-cancel">Cancel</button>
+    <button id="test-go" class="primary">Process email</button>
+  </div>
+</dialog>
+
+<dialog id="dlg-token" aria-labelledby="token-title">
+  <form id="token-form">
+    <h2 id="token-title">Enter the reviewer token</h2>
+    <div class="muted">Your administrator sets this in the server's <code>.env</code> file (REVIEWER_TOKEN). It is kept only in this browser tab.</div>
+    <label for="token-input">Reviewer token</label>
+    <input id="token-input" type="password" autocomplete="off">
+    <div class="actions" style="margin-top:16px"><button class="primary" type="submit">Unlock</button></div>
+  </form>
+</dialog>
+
+<script>
+"use strict";
+// Customers control the text of every email and draft, so all of it is shown with textContent
+// (never parsed as HTML): a hostile email must not be able to run script in the reviewer's browser.
+const $ = (id) => document.getElementById(id);
+const INTENTS = { check_balance: "Balance enquiry", get_transactions: "Card transactions", request_statement: "Statement request" };
+const state = { token: "", tab: "pending", pending: [], history: [], current: null, sig: "", loadedAt: 0, firstLoad: true };
+try { state.token = sessionStorage.getItem("reviewerToken") || ""; } catch (e) { /* storage blocked: memory only */ }
+
+class AuthError extends Error {}
+
+function el(tag, text, className) {
+  const node = document.createElement(tag);
+  if (text !== undefined) node.textContent = text;
+  if (className) node.className = className;
+  return node;
+}
+
+function chip(text, kind) { return el("span", text, "chip" + (kind ? " " + kind : "")); }
+
+function ago(iso) {
+  const minutes = Math.max(0, Math.round((Date.now() - new Date(iso)) / 60000));
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return minutes + " min ago";
+  if (minutes < 1440) return Math.round(minutes / 60) + " h ago";
+  return Math.round(minutes / 1440) + " d ago";
+}
+
+function toast(message, kind) {
+  const node = el("div", message, "toast " + (kind || ""));
+  node.addEventListener("click", () => node.remove());
+  $("toasts").append(node);
+  setTimeout(() => node.remove(), kind === "error" ? 9000 : 5000);
+}
+
+async function busy(button, label, work) {
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = label;
+  try { return await work(); } finally { button.disabled = false; button.textContent = original; }
+}
+
+async function api(method, path, body) {
+  const headers = { "Content-Type": "application/json" };
+  if (state.token) headers["X-Reviewer-Token"] = state.token;
+  const res = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401) throw new AuthError("Reviewer token needed");
+  if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Something went wrong (" + res.status + ")");
+  return data;
+}
+
+// ---- wording -----------------------------------------------------------------------------
+function statusInfo(e) {
+  if (e.status === "pending_review") return ["Needs review", "info"];
+  if (e.status === "approved") {
+    if (e.delivery_status === "sent") return ["Reply sent", "ok"];
+    if (e.delivery_status === "send_failed") return ["Sending failed", "urgent"];
+    return ["Approved, not sent", ""];
+  }
+  if (e.status === "rejected") return ["Rejected", ""];
+  if (e.status === "failed") return ["Failed", "urgent"];
+  if (e.status === "unsupported") return ["Unsupported request", ""];
+  return [e.status.replace(/_/g, " "), ""];
+}
+
+function friendlyIssue(text) {
+  const [intent, ...rest] = text.split(": ");
+  return INTENTS[intent] && rest.length ? INTENTS[intent] + ": " + rest.join(": ") : text;
+}
+
+// ---- list --------------------------------------------------------------------------------
+function renderList() {
+  const items = state.tab === "pending" ? state.pending : state.history;
+  const list = $("list");
+  list.replaceChildren();
+  $("count-pending").textContent = state.pending.length || "";
+
+  if (!items.length) {
+    const box = el("li", undefined, "empty");
+    if (state.tab === "pending") {
+      box.append(el("strong", "All caught up"), "Nothing is waiting for review.");
+    } else {
+      box.append(el("strong", "No history yet"), "Emails you approve or reject appear here.");
+    }
+    list.append(box);
+    return;
+  }
+  for (const e of items) {
+    const button = el("button");
+    const top = el("div", undefined, "row-top");
+    if (e.priority === "high" && e.status === "pending_review") top.append(chip("Urgent", "urgent"));
+    if (e.needs_person && e.status === "pending_review") top.append(chip("Needs a person", "warn"));
+    top.append(el("span", e.subject || "(no subject)", "subject"));
+    const meta = el("div", undefined, "row-top muted");
+    meta.append(el("span", (e.sender_email || "unknown sender") + " · " + ago(e.created_at)));
+    if (state.tab === "history") { const [label, kind] = statusInfo(e); meta.append(chip(label, kind)); }
+    button.append(top, meta);
+    if (state.current && state.current.email_id === e.email_id) button.setAttribute("aria-current", "true");
+    button.addEventListener("click", () => openEmail(e));
+    const li = el("li");
+    li.append(button);
+    list.append(li);
+  }
+}
+
+function setTab(tab) {
+  state.tab = tab;
+  $("tab-pending").setAttribute("aria-selected", tab === "pending");
+  $("tab-history").setAttribute("aria-selected", tab === "history");
+  renderList();
+}
+
+async function refresh(manual) {
+  try {
+    const [pending, all] = await Promise.all([api("GET", "/emails?status=pending_review&limit=100"), api("GET", "/emails?limit=100")]);
+    state.pending = pending.emails;
+    state.history = all.emails.filter((e) => e.status !== "pending_review").sort((a, b) => b.created_at.localeCompare(a.created_at));
+    state.loadedAt = Date.now();
+    $("signout").hidden = !state.token;
+    const sig = JSON.stringify([state.pending.map((e) => e.email_id), state.history.map((e) => [e.email_id, e.status, e.delivery_status])]);
+    if (sig !== state.sig || manual) { state.sig = sig; renderList(); }
+    if (state.firstLoad) {
+      state.firstLoad = false;
+      const wanted = decodeURIComponent(location.hash.slice(1));
+      const target = [...state.pending, ...state.history].find((e) => e.email_id === wanted) || state.pending[0];
+      if (target) openEmail(target); else showEmpty();
+    }
+    if (!state.current) showEmpty();
+  } catch (e) {
+    if (e instanceof AuthError) lock(); else if (manual) toast(e.message, "error");
+  }
+}
+
+function tickUpdated() {
+  $("updated").textContent = state.loadedAt ? "Updated " + Math.max(0, Math.round((Date.now() - state.loadedAt) / 1000)) + " s ago" : "";
+}
+
+// ---- detail ------------------------------------------------------------------------------
+function showEmpty(locked) {
+  state.current = null;
+  $("detail").hidden = true;
+  const box = $("empty");
+  box.hidden = false;
+  box.replaceChildren();
+  if (locked) {
+    box.append(el("strong", "Locked"), "Enter the reviewer token to see the emails.");
+    const unlock = el("button", "Enter token", "primary");
+    unlock.addEventListener("click", () => $("dlg-token").showModal());
+    box.append(el("br"), unlock);
+  } else if (!state.pending.length) {
+    box.append(el("strong", "Nothing needs your attention"), "New customer emails show up here for approval.");
+    const check = el("button", "Check mailbox now", "primary");
+    check.addEventListener("click", () => $("poll").click());
+    box.append(el("br"), check);
+  } else {
+    box.append(el("strong", "Pick an email"), "Choose one from the list to review its reply.");
+  }
+}
+
+function lock() {
+  state.pending = []; state.history = []; state.sig = "";
+  renderList();
+  showEmpty(true);
+  $("signout").hidden = true;
+  if (!$("dlg-token").open) $("dlg-token").showModal();
+}
+
+function parseDraft(draft) {
+  const lines = draft.replace(/\r\n/g, "\n").split("\n");
+  const match = /^subject:\s*(.*)$/i.exec(lines[0] || "");
+  return match ? { subject: match[1].trim(), body: lines.slice(1).join("\n").trim() } : { subject: "", body: draft.trim() };
+}
+
+function composeReply() {
+  const subject = $("r-subject").value.trim();
+  const body = $("r-body").value.trim();
+  return subject ? "Subject: " + subject + "\n\n" + body : body;
+}
+
+function updateEdited() {
+  const edited = state.current && state.current.open && composeReply() !== state.current.original;
+  $("d-edited").hidden = !edited;
+  $("d-reset").hidden = !edited;
+  $("approve").textContent = edited ? "Approve & send my edited reply" : "Approve & send";
+}
+
+async function openEmail(summary) {
+  try {
+    const record = await api("GET", "/emails/" + encodeURIComponent(summary.email_id));
+    const merged = { ...summary, ...record };
+    const open = record.status === "pending_review";
+    const parts = parseDraft(record.draft);
+    state.current = { ...merged, open, original: "" };
+    const wantTab = open ? "pending" : "history";
+    if (state.tab !== wantTab) setTab(wantTab);
+    $("r-subject").value = parts.subject;
+    $("r-body").value = parts.body;
+    state.current.original = composeReply();
+
+    $("empty").hidden = true;
+    $("detail").hidden = false;
+    history.replaceState(null, "", "#" + encodeURIComponent(merged.email_id));
+
+    $("d-subject").textContent = merged.subject || "(no subject)";
+    const chips = $("d-chips");
+    chips.replaceChildren();
+    const [statusText, statusKind] = statusInfo(merged);
+    chips.append(chip(statusText, statusKind));
+    if (merged.priority === "high") chips.append(chip("Urgent", "urgent"));
+    const manual = open && !record.intents.length;
+    if (manual) chips.append(chip("Needs a person", "warn"));
+    for (const intent of record.intents) chips.append(chip(INTENTS[intent] || intent));
+    if (record.sentiment === "negative") chips.append(chip("Customer sounds upset", "warn"));
+    if (record.sentiment === "urgent") chips.append(chip("Customer says it is urgent", "warn"));
+    if (record.sentiment === "positive") chips.append(chip("Positive tone", "ok"));
+    $("d-meta").textContent = "From " + (merged.sender_email || "unknown sender") +
+      (merged.created_at ? " · received " + ago(merged.created_at) + " (" + new Date(merged.created_at).toLocaleString() + ")" : "");
+
+    $("d-email").textContent = record.email_text;
+    $("r-to").value = merged.sender_email || "";
+
+    const issues = $("d-issues");
+    issues.hidden = !record.errors.length;
+    $("d-issue-list").replaceChildren(...record.errors.map((text) => el("li", friendlyIssue(text))));
+
+    $("d-manual").hidden = !manual;
+    $("d-manual-text").textContent = " The system could not complete this request, so nothing was looked up." +
+      (record.errors.some((t) => /classify/i.test(t)) ? " The email could not be read reliably, so a supported request may be hidden in it." : "") +
+      " The draft is only a polite hand-off: edit it, write a real answer, or reject it and follow up another way.";
+
+    const outcome = $("d-outcome");
+    outcome.hidden = open;
+    if (!open) {
+      let text = statusText + ".", kind = "plain";
+      if (record.status === "approved" && record.delivery_status === "sent") { text = "Reply sent to " + (merged.sender_email || "the customer") + "."; kind = "ok"; }
+      else if (record.delivery_status === "send_failed") { text = "You approved this reply, but sending it failed. Check the server logs."; kind = "bad"; }
+      else if (record.status === "approved") { text = "Approved, but no email was sent (mail is not configured)."; }
+      else if (record.status === "rejected") { text = "Rejected" + (record.reviewer_feedback ? ": " + record.reviewer_feedback : "."); }
+      outcome.className = "notice " + kind;
+      outcome.textContent = text;
+    }
+    for (const id of ["r-subject", "r-body"]) $(id).readOnly = !open;
+    $("d-actions").hidden = !open;
+    updateEdited();
+    renderList();
+  } catch (e) {
+    if (e instanceof AuthError) lock(); else toast(e.message, "error");
+  }
+}
+
+// ---- actions -----------------------------------------------------------------------------
+async function finish(message, kind) {
+  toast(message, kind);
+  state.current = null;
+  history.replaceState(null, "", location.pathname);
+  state.firstLoad = false;
+  await refresh(true);
+  if (state.tab === "pending" && state.pending[0]) openEmail(state.pending[0]); else showEmpty();
+}
+
+$("approve").addEventListener("click", () => {
+  const c = state.current;
+  $("send-to").textContent = "To: " + (c.sender_email || "the sender") + " · Subject: " + ($("r-subject").value.trim() || "(none)");
+  $("send-preview").textContent = $("r-body").value.trim();
+  $("send-edited").hidden = composeReply() === c.original;
+  $("dlg-send").showModal();
+});
+$("send-cancel").addEventListener("click", () => $("dlg-send").close());
+$("send-confirm").addEventListener("click", () => busy($("send-confirm"), "Sending…", async () => {
+  const c = state.current;
+  const body = { approved: true, feedback: "" };
+  if (composeReply() !== c.original) body.edited_draft = composeReply();
+  try {
+    const result = await api("POST", "/emails/" + encodeURIComponent(c.email_id) + "/review", body);
+    $("dlg-send").close();
+    await finish(result.message, result.delivery_status === "send_failed" ? "error" : "ok");
+  } catch (e) {
+    $("dlg-send").close();
+    if (e instanceof AuthError) return lock();
+    toast(e.message, "error");
+    refresh(true);
+  }
+}));
+
+$("reject").addEventListener("click", () => { $("reject-reason").value = ""; $("dlg-reject").showModal(); });
+$("reject-cancel").addEventListener("click", () => $("dlg-reject").close());
+$("reject-confirm").addEventListener("click", () => busy($("reject-confirm"), "Rejecting…", async () => {
+  try {
+    const result = await api("POST", "/emails/" + encodeURIComponent(state.current.email_id) + "/review",
+      { approved: false, feedback: $("reject-reason").value.trim() });
+    $("dlg-reject").close();
+    await finish(result.message, "ok");
+  } catch (e) {
+    $("dlg-reject").close();
+    if (e instanceof AuthError) return lock();
+    toast(e.message, "error");
+    refresh(true);
+  }
+}));
+
+$("d-reset").addEventListener("click", () => {
+  const parts = parseDraft(state.current.draft);
+  $("r-subject").value = parts.subject;
+  $("r-body").value = parts.body;
+  updateEdited();
+});
+$("r-subject").addEventListener("input", updateEdited);
+$("r-body").addEventListener("input", updateEdited);
+
+// ---- header ------------------------------------------------------------------------------
+$("tab-pending").addEventListener("click", () => setTab("pending"));
+$("tab-history").addEventListener("click", () => setTab("history"));
+$("refresh").addEventListener("click", () => refresh(true));
+
+$("poll").addEventListener("click", () => busy($("poll"), "Checking…", async () => {
+  try {
+    const r = await api("POST", "/emails/mailbox/poll");
+    toast(r.count ? "Found " + r.count + " new email" + (r.count > 1 ? "s" : "") + "." : r.note, r.count ? "ok" : "");
+    setTab("pending");
+    state.firstLoad = false;
+    await refresh(true);
+    if (r.count && state.pending[0] && !state.current) openEmail(state.pending[0]);
+  } catch (e) { if (e instanceof AuthError) lock(); else toast(e.message, "error"); }
+}));
+
+$("new-test").addEventListener("click", () => $("dlg-test").showModal());
+$("test-cancel").addEventListener("click", () => $("dlg-test").close());
+$("test-go").addEventListener("click", () => busy($("test-go"), "Processing… (can take 30 s)", async () => {
+  try {
+    const r = await api("POST", "/emails/process", { sender_email: $("t-sender").value.trim(), email_text: $("t-text").value });
+    $("dlg-test").close();
+    setTab("pending");
+    state.firstLoad = false;
+    await refresh(true);
+    const mine = state.pending.find((e) => e.email_id === r.email_id);
+    toast(r.message, "ok");
+    if (mine) openEmail(mine);
+  } catch (e) { if (e instanceof AuthError) { $("dlg-test").close(); lock(); } else toast(e.message, "error"); }
+}));
+
+$("token-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  state.token = $("token-input").value.trim();
+  try { sessionStorage.setItem("reviewerToken", state.token); } catch (e) { /* ignore */ }
+  $("token-input").value = "";
+  $("dlg-token").close();
+  state.firstLoad = true;
+  refresh(true);
+});
+$("signout").addEventListener("click", () => {
+  state.token = "";
+  try { sessionStorage.removeItem("reviewerToken"); } catch (e) { /* ignore */ }
+  lock();
+});
+
+// a different #link pasted into the same tab only changes the hash: follow it
+window.addEventListener("hashchange", () => {
+  const wanted = decodeURIComponent(location.hash.slice(1));
+  const target = [...state.pending, ...state.history].find((e) => e.email_id === wanted);
+  if (target && (!state.current || state.current.email_id !== wanted)) openEmail(target);
+});
+
+// ---- start -------------------------------------------------------------------------------
+refresh(true);
+setInterval(() => { if (!document.querySelector("dialog[open]")) refresh(false); }, 30000);
+setInterval(tickUpdated, 1000);
+</script>
+</body>
+</html>

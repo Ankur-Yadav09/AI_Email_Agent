@@ -23,6 +23,7 @@ from mcp.client.stdio import stdio_client
 
 # Import our existing LLM function.
 from utils.llm_client import generate_response
+from utils.periods import statement_period
 
 # Configure how the MCP client starts the banking MCP server.
 server_params = StdioServerParameters(
@@ -41,6 +42,12 @@ ALLOWED_INTENTS = {
 
 
 SENTIMENTS = {"neutral", "positive", "negative", "urgent"}
+
+# Emails about fraud or a lost/blocked card are urgent whatever tone they are written in.
+URGENT_WORDS = re.compile(
+    r"fraud|scam|phishing|hacked|stolen|unauthori[sz]ed|lost (?:my |the )?card|card (?:is |was |has been )?(?:lost|blocked)|disput",
+    re.I,
+)
 
 # The small LLM sometimes adds intents nobody asked for. An intent is only kept if the
 # email contains at least one of its words.
@@ -68,12 +75,18 @@ def extract_entities(email_text: str, llm_entities: dict, attachment_text: str =
     entities.setdefault("account_number", None)
     entities.setdefault("card_number", None)
 
-    for key in ("start_date", "end_date"):
-        value = llm_entities.get(key)
+    # The statement period comes from the email itself; the LLM's dates are only a fallback.
+    period = statement_period(email_text)
+    if period:
+        entities["start_date"], entities["end_date"] = (d.isoformat() for d in period)
+    else:
         try:
-            entities[key] = date.fromisoformat(value).isoformat() # type: ignore
+            start = date.fromisoformat(llm_entities.get("start_date"))  # type: ignore[arg-type]
+            end = date.fromisoformat(llm_entities.get("end_date"))  # type: ignore[arg-type]
+            valid = start <= end
         except (TypeError, ValueError):
-            entities[key] = None
+            valid = False
+        entities["start_date"], entities["end_date"] = (start.isoformat(), end.isoformat()) if valid else (None, None)
 
     count = llm_entities.get("transaction_count")
     entities["transaction_count"] = (
@@ -130,18 +143,22 @@ Customer email:
 
     try:
         # Ask Ollama to classify the email.
-        raw_response = generate_response(prompt)
+        raw_response = generate_response(prompt, json_mode=True)
 
         logger.info("Raw intent response: %r", raw_response)
 
-        # Extract a JSON object if the model wraps it in extra text.
-        match = re.search(r"\{.*\}", raw_response, re.DOTALL)
+        # Decode the first JSON object, even if the model wrapped it in chatty text (stray braces included).
+        parsed_response = None
+        decoder = json.JSONDecoder()
+        for start in (m.start() for m in re.finditer(r"\{", raw_response)):
+            try:
+                parsed_response, _ = decoder.raw_decode(raw_response[start:])
+                break
+            except json.JSONDecodeError:
+                continue
 
-        if not match:
+        if parsed_response is None:
             raise ValueError("The LLM did not return a JSON object.")
-
-        # Convert the response text into a Python dictionary.
-        parsed_response = json.loads(match.group(0))
 
         # Ensure the response has the expected structure.
         if not isinstance(parsed_response, dict):

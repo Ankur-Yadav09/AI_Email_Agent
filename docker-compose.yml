@@ -13,7 +13,7 @@ services:
     image: ollama/ollama
     environment:
       OLLAMA_HOST: http://ollama:11434
-    entrypoint: ["ollama", "pull", "llama3.2:1b"]
+    entrypoint: ["ollama", "pull", "${OLLAMA_MODEL:-llama3.2:3b}"]
     depends_on:
       ollama:
         condition: service_healthy
@@ -28,6 +28,7 @@ services:
         required: false   # mailbox settings; see .env.example
     environment:
       OLLAMA_HOST: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
       DATA_DIR: /data   # databases live in the app_data volume and survive rebuilds
     volumes:
       - app_data:/data

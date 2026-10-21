@@ -21,12 +21,12 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 # Reuse the classifier you have already tested.
-from agents.email_agent import identify_intent
+from agents.email_agent import URGENT_WORDS, identify_intent
 from models.email_state import EmailState, priority_for
 
 # Import our existing LLM function.
 from utils.logging_config import audit
-from utils.reply_builder import build_reply
+from utils.reply_builder import build_handoff_reply, build_reply
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +86,15 @@ def receive_email(state: EmailState) -> dict:
 def classify_email(state: EmailState, config: RunnableConfig = None):  # type: ignore[assignment]
     result = identify_intent(state.email_text, state.attachment_text) # type: ignore
 
+    # Fraud, a lost card or a dispute is urgent however politely it is written, and even if the model
+    # failed. It must never be answered with account data: a person takes it over (hand-off draft).
+    if URGENT_WORDS.search(state.email_text):
+        result["sentiment"] = "urgent"
+        if result.get("intents"):
+            audit("handed_to_person", email_id=_thread_id(config), reason="fraud/lost card/dispute wording",
+                  dropped_intents=result["intents"])
+            result["intents"] = []
+
     audit(
         "classified",
         email_id=_thread_id(config),
@@ -134,14 +143,9 @@ def route_request(state: EmailState) -> str:
 # 5. Node: Handle unsupported requests
 # --------------------------------------------------
 def handle_unsupported(state: EmailState):
+    """A request the system cannot complete. The hand-off draft still goes to a person for review."""
     return {
-        "draft": (
-            "Dear Customer,\n\n"
-            "Thank you for contacting us. Your request is not "
-            "supported by our current automated service. "
-            "Please contact customer support for assistance.\n\n"
-            "Best regards,\nCustomer Support Team"
-        ),
+        "draft": build_handoff_reply(state.email_text, state.customer_name, state.sentiment),
         "status": "unsupported",
     }
 
@@ -412,13 +416,7 @@ def generate_draft(state: EmailState, config: RunnableConfig = None) -> dict:  #
         logger.exception("Draft generation failed")
         audit("draft_failed", email_id=_thread_id(config))
         return {
-            "draft": (
-                "Dear Customer,\n\n"
-                "Thank you for contacting us. We are unable to "
-                "prepare your response automatically at this time. "
-                "Please contact customer support for assistance.\n\n"
-                "Best regards,\nCustomer Support Team"
-            ),
+            "draft": build_handoff_reply(state.email_text, state.customer_name, state.sentiment),
             "status": "draft_generation_failed",
             "errors": state.errors + ["Email draft generation failed."],
         }
@@ -519,8 +517,9 @@ builder.add_edge("supported_requests", "generate_draft")
 builder.add_edge("generate_draft", "human_review")
 builder.add_edge("human_review", END)
 
-# Unsupported requests get a safe response without banking tool calls.
-builder.add_edge("handle_unsupported", END)
+# Unsupported requests get a safe hand-off draft without banking tool calls, and a person reviews it
+# like any other reply (it would otherwise never be answered).
+builder.add_edge("handle_unsupported", "human_review")
 
 # --------------------------------------------------
 # 9. Create a workflow using the supplied checkpointer

@@ -62,7 +62,7 @@ def test_tone_lines_make_no_promises():
 
 def test_intent_guard_drops_intents_the_email_never_asked_for(monkeypatch):
     llm = {"intents": ["check_balance", "get_transactions", "request_statement"], "sentiment": "neutral"}
-    monkeypatch.setattr(agent, "generate_response", lambda prompt: json.dumps(llm))
+    monkeypatch.setattr(agent, "generate_response", lambda prompt, **kw: json.dumps(llm))
 
     only_balance = agent.identify_intent("Subject: Balance Enquiry\n\nPlease share my balance for account 1234567890.")
     assert only_balance["intents"] == ["check_balance"]

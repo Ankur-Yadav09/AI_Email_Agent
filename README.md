@@ -2,12 +2,17 @@
 
 Intelligent email processing and automated customer response for a bank. It reads customer emails (from a real Gmail inbox, a folder of `.eml` files, or the API), detects intents (including several in one email) and sentiment, extracts account/card details from the email and its PDF/image attachments, validates them, fetches data through MCP tools backed by mock banking APIs, and prepares a reply. **A human reviews every reply; only an approved one is emailed back.**
 
-Design, workflow, API specs and limitations: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Further reading in `docs/`:
+- [ARCHITECTURE.md](docs/ARCHITECTURE.md): design, workflow, API specs and limitations
+- [DESIGN_AND_DECISIONS.md](docs/DESIGN_AND_DECISIONS.md): the complete flow, the techniques used, and why each decision was taken
+- [CLIENT_GUIDE.md](docs/CLIENT_GUIDE.md): how to explain and demo the project to a client
+- [INTERVIEW_PREP.md](docs/INTERVIEW_PREP.md): the concepts used in the project, with likely interview questions and answers
 
 ## Features
 
 - **Intents:** balance enquiry, card transactions, statement request, or several in one email
 - **Sentiment** (neutral / positive / negative / urgent) and **entity extraction** (account, card, dates, transaction count, name). Angry or urgent emails get an apologetic or acknowledging line and a `high` review priority
+- **Statement periods in plain words** ("April 2026", "last month", "01/04/2026 to 30/04/2026"), read by a deterministic parser rather than the model; if the period is unclear the customer is asked for it
 - **Validation** of account and card numbers; partial failures are reported without losing the successful parts (e.g. balance returned, "please recheck your card" for a bad card)
 - **Replies built from a fixed template.** The LLM (Llama via Ollama) only classifies, so names, amounts and numbers are never invented
 - **Orchestration:** LangGraph workflow with a human approve / edit / reject step (persisted in SQLite), independent intents run in parallel, tool calls have timeouts and safe retries
@@ -23,7 +28,7 @@ Requirements: Docker Desktop.
 docker compose up --build
 ```
 
-The first run downloads the Llama model (about 1.3 GB, via the `ollama-pull` service), so the API starts after that finishes. Then open **http://localhost:8000/docs**. Databases live in the `app_data` Docker volume and survive rebuilds.
+The first run downloads the Llama model (about 2 GB, via the `ollama-pull` service), so the API starts after that finishes. Then open **http://localhost:8000/docs**. Databases live in the `app_data` Docker volume and survive rebuilds.
 
 ## Quick start (local)
 
@@ -31,13 +36,19 @@ Requirements: Python 3.12, [uv](https://docs.astral.sh/uv/), [Ollama](https://ol
 
 ```bash
 uv sync
-ollama pull llama3.2:1b
+ollama pull llama3.2:3b
 uv run python -m uvicorn main:app --port 8000
 ```
 
 Run the helper scripts below with `uv run python scripts/...` (or from an activated virtual environment); in Docker use `docker compose exec api python scripts/...`.
 
 The databases are created and seeded on startup: customer `CUST001` (`demo@example.com`), account `1234567890` (balance INR 25,000), card `4567XXXX8901`.
+
+## Reviewer console (web UI)
+
+Open **http://localhost:8000/ui**. It opens straight into the most urgent email waiting for review: the customer's email on the left, the reply on the right with separate **Subject** and **Message** boxes you can edit (an "edited" marker and **Reset** appear when you do), and chips showing what was asked and how the customer sounds. **Approve & send** shows a confirmation with exactly what will be emailed and to whom; **Reject** takes an optional reason. A yellow box lists anything the system could not do (for example an invalid card). The **History** tab shows handled emails read-only, with the outcome ("Reply sent", "Rejected: reason"). **Check mailbox** looks for new mail, and **New test email** runs the agent without Gmail. Each email has a shareable link (`/ui#<email_id>`), and the page works on phones and in dark mode. It is one static page (`ui/index.html`, no build step); everything customers write is displayed as plain text, never as HTML.
+
+Because approving sends a real email, protect the API with a shared secret. Put `REVIEWER_TOKEN=<long random string>` in `.env` (generate one with `python -c "import secrets; print(secrets.token_urlsafe(24))"`), restart, and enter the token when the page asks for it (it is kept for that browser tab only; **Sign out** forgets it). Every `/emails` endpoint, including Swagger (use *Authorize*), then requires it. With no token set the API is open and the server logs a warning at startup, so only do that on a private machine.
 
 ## Try it
 
@@ -64,7 +75,7 @@ That example is the "partial validation failure" scenario: the balance is return
 ```bash
 python scripts/demo.py                    # all samples, prints each draft
 python scripts/demo.py scenario_5 urgent  # only samples whose name matches
-python scripts/demo.py --approve          # also approve each draft
+python scripts/demo.py --approve          # also approve each draft (uses REVIEWER_TOKEN from the environment if set)
 docker compose exec api python scripts/demo.py   # inside Docker
 ```
 
@@ -116,6 +127,9 @@ Set in `.env` (see `.env.example`) or the environment.
 | `MAIL_POLL_SECONDS` | `0` (off) | Poll the mailbox in the background every N seconds |
 | `REQUIRE_SENDER_AUTH` | `true` | Only answer senders Gmail verified. Disable for testing only |
 | `IMAP_HOST`, `SMTP_HOST`, `SMTP_PORT` | Gmail, 587 | Other mail providers |
+| `REVIEWER_TOKEN` | unset (API open) | Shared secret required by every `/emails` endpoint and the UI. Set it before exposing the port |
+| `SUPPORT_CONTACT_TEXT` | "Please contact customer support for assistance." | Sentence added to the reply when a request cannot be completed by email (e.g. an address change). Set it to the real channel, such as net banking or a phone number |
+| `OLLAMA_MODEL` | `llama3.2:3b` | Model used for classification. Docker pulls it automatically; locally run `ollama pull <model>` |
 | `OLLAMA_HOST` | local Ollama | Set automatically in Docker |
 | `DATA_DIR` | project folder | Where the SQLite databases live (a volume in Docker, a temp folder in tests) |
 
@@ -130,6 +144,7 @@ Set in `.env` (see `.env.example`) or the environment.
 | `GET /emails/{id}` | Status, intents, sentiment, priority, draft, errors, delivery status |
 | `POST /emails/{id}/review` | Approve / edit / reject; an approval sends the reply |
 | `/api/...` | Mock core banking: balance, card transactions, statement, validate account / card |
+| `GET /ui` | Reviewer console (web page) |
 | `GET /health` | Liveness |
 
 ## Project structure
@@ -142,6 +157,7 @@ utils/     databases, LLM client, mailbox (IMAP/SMTP), email reader, reply templ
 scripts/   demo, sample inbox, Gmail login check, customer registration
 tests/     pytest suites
 data/      sample_emails.json (demo scenarios); inbox/ and attachments/ are created at runtime
+ui/        reviewer console (single static page)
 docs/      ARCHITECTURE.md
 logs/      app.log and audit.log (created at runtime)
 main.py    FastAPI entry point
@@ -164,7 +180,8 @@ Both are masked (`1234567890` appears as `XXXX7890`).
 
 ## Limitations
 
-- The 1B Llama model is small; intent accuracy has not been measured, and a keyword check removes intents the email never mentioned. Use a larger model for production.
+- The default Llama 3.2 3B model is small; intent accuracy has not been measured, and a keyword check removes intents the email never mentioned. Use a larger model for production.
+- Requests the system cannot complete (e.g. "update my address") are not answered automatically. They appear in the review queue marked **Needs a person**, with a polite hand-off draft pointing to `SUPPORT_CONTACT_TEXT`; emails about fraud, a lost or blocked card, or a dispute are always handed to a person (never answered with account data) and marked urgent.
 - Scanned PDFs (images inside a PDF) are not read; text PDFs and images are.
 - Attachments are only searched for account/card numbers; they are not understood or summarised.
 - Mail is polled on an interval (no IMAP push); replies are plain text; Gmail aliases (dots, `+tags`) are not normalised when matching customers.

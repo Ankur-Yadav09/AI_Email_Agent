@@ -40,7 +40,7 @@ def test_statement_dates():
 def test_llm_outage_fails_safely(monkeypatch):
     import agents.email_agent as agent
 
-    def boom(prompt):
+    def boom(prompt, **kw):
         raise ConnectionError("ollama down")
 
     monkeypatch.setattr(agent, "generate_response", boom)

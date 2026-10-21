@@ -230,3 +230,55 @@ def test_empty_poll_explains_itself(monkeypatch):
     monkeypatch.setattr(mailbox, "count_unseen", lambda with_senders=True: 0)
     with TestClient(app) as client:
         assert "MAIL_MAX_AGE_DAYS" in client.post("/emails/mailbox/poll").json()["note"]
+
+
+def test_review_refuses_a_workflow_that_is_not_paused(fakes):
+    """A pending record without a saved workflow must not be silently re-run and overwritten."""
+    from utils.email_database import create_email_record, get_email_record, update_email_record
+
+    email_id = f"orphan-{uuid.uuid4()}"
+    create_email_record(email_id, "x", sender_email="demo@example.com", subject="orphan")
+    update_email_record(email_id, status="pending_review", draft="Subject: keep me\n\nBody")
+
+    with TestClient(app) as client:
+        response = client.post(f"/emails/{email_id}/review", json={"approved": True})
+
+    assert response.status_code == 409 and "saved workflow state" in response.json()["detail"]
+    record = get_email_record(email_id)
+    assert record["status"] == "pending_review" and record["draft"] == "Subject: keep me\n\nBody"
+    assert fakes["sent"] == []
+
+
+def test_out_of_scope_email_reaches_the_queue_flagged_and_gets_the_support_text(fakes, monkeypatch):
+    """The 'update my address' case: no reply used to be sent at all."""
+    monkeypatch.setenv("SUPPORT_CONTACT_TEXT", "Please visit a branch with a photo ID.")
+    monkeypatch.setattr(wf, "identify_intent", lambda text, attachment_text="": {"intents": [], "sentiment": "neutral", "entities": {}})
+    message_id = f"<{uuid.uuid4()}@example.com>"
+    fakes["inbox"] = [("1", build_eml(
+        "demo@example.com", "Update my address", "Please update my home address.",
+        headers={"Message-ID": message_id, "Authentication-Results": GOOD_AUTH},
+    ))]
+
+    with TestClient(app) as client:
+        result = client.post("/emails/mailbox/poll").json()["results"][0]
+        assert result["status"] == "pending_review"
+
+        queue = client.get("/emails", params={"status": "pending_review", "limit": 200}).json()["emails"]
+        entry = next(e for e in queue if e["email_id"] == result["email_id"])
+        assert entry["needs_person"] is True and "intents" not in entry
+
+        assert fakes["sent"] == []  # still nothing sent without approval
+        review = client.post(f"/emails/{result['email_id']}/review", json={"approved": True}).json()
+        assert review["delivery_status"] == "sent"
+
+    to, subject, body, in_reply_to = fakes["sent"][0]
+    assert (to, subject, in_reply_to) == ("demo@example.com", "Re: Update my address", message_id)
+    assert "Dear Demo Customer," in body and "Please visit a branch with a photo ID." in body
+
+
+def test_normal_requests_are_not_flagged_as_needing_a_person(fakes):
+    fakes["inbox"] = [("1", message())]
+    with TestClient(app) as client:
+        email_id = client.post("/emails/mailbox/poll").json()["results"][0]["email_id"]
+        queue = client.get("/emails", params={"status": "pending_review", "limit": 200}).json()["emails"]
+    assert next(e for e in queue if e["email_id"] == email_id)["needs_person"] is False
