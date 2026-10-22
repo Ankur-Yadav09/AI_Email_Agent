@@ -25,6 +25,7 @@ from agents.email_agent import URGENT_WORDS, identify_intent
 from models.email_state import EmailState, priority_for
 
 # Import our existing LLM function.
+from utils import tracing
 from utils.logging_config import audit
 from utils.reply_builder import build_handoff_reply, build_reply
 
@@ -84,7 +85,15 @@ def receive_email(state: EmailState) -> dict:
 # --------------------------------------------------
 
 def classify_email(state: EmailState, config: RunnableConfig = None):  # type: ignore[assignment]
+    with tracing.span("agent.classify", "CHAIN", email__id=_thread_id(config), session__id=_thread_id(config),
+                      input__size_chars=len(state.email_text)):
+        return _classify_email(state, config)
+
+
+def _classify_email(state: EmailState, config: RunnableConfig = None):  # type: ignore[assignment]
+    started = time.perf_counter()
     result = identify_intent(state.email_text, state.attachment_text) # type: ignore
+    classify_ms = round((time.perf_counter() - started) * 1000)
 
     # Fraud, a lost card or a dispute is urgent however politely it is written, and even if the model
     # failed. It must never be answered with account data: a person takes it over (hand-off draft).
@@ -102,6 +111,15 @@ def classify_email(state: EmailState, config: RunnableConfig = None):  # type: i
         sentiment=result.get("sentiment"),
         entities=result.get("entities"),
         error=result.get("error"),
+        dropped_intents=result.get("dropped_intents"),
+        ms=classify_ms,
+    )
+    tracing.annotate(
+        classify__intents=result.get("intents", []),
+        classify__dropped_intents=result.get("dropped_intents", []),
+        classify__sentiment=result.get("sentiment"),
+        classify__failed=bool(result.get("error")),
+        output__value=f"intents={result.get('intents', [])} sentiment={result.get('sentiment')}",  # shown in the trace list
     )
 
     return {
@@ -157,6 +175,20 @@ def handle_unsupported(state: EmailState):
 
 
 async def supported_requests(state: EmailState, config: RunnableConfig = None) -> dict:  # type: ignore[assignment]
+    """Execute supported requests using customer-specific MCP tools (one trace span for the step)."""
+    with tracing.span("agent.tools", "CHAIN", email__id=_thread_id(config), session__id=_thread_id(config),
+                      tools__intents=state.intents):
+        out = await _supported_requests(state, config)
+        tracing.annotate(
+            tools__status=out.get("status"),
+            tools__succeeded=[r["intent"] for r in out.get("tool_results", [])],
+            tools__failed=len(out.get("errors", [])),
+            output__value=f"{out.get('status')}: {len(out.get('tool_results', []))} succeeded, {len(out.get('errors', []))} failed",
+        )
+        return out
+
+
+async def _supported_requests(state: EmailState, config: RunnableConfig = None) -> dict:  # type: ignore[assignment]
     """Execute supported requests using customer-specific MCP tools."""
 
     customer_id = state.verified_customer_id
@@ -173,6 +205,7 @@ async def supported_requests(state: EmailState, config: RunnableConfig = None) -
     tool_results = []
     errors = []
     customer_name = ""
+    step_started = time.perf_counter()
 
     async with stdio_client(server_params) as (read, write):  # noqa: SIM117
         async with ClientSession(read, write) as session:
@@ -181,7 +214,7 @@ async def supported_requests(state: EmailState, config: RunnableConfig = None) -
             response = await session.list_tools()
             available_tools = {tool.name for tool in response.tools}
 
-            async def call_banking_tool(tool_name: str, arguments: dict):
+            async def _call_banking_tool(tool_name: str, arguments: dict):
                 """Call an MCP tool and return its JSON result."""
                 if tool_name not in available_tools:
                     raise ValueError(
@@ -233,6 +266,12 @@ async def supported_requests(state: EmailState, config: RunnableConfig = None) -
                     raise ValueError("Banking tool returned an error.")
 
                 return data
+
+            async def call_banking_tool(tool_name: str, arguments: dict):
+                """One trace span per tool call (the arguments are masked before they are recorded)."""
+                with tracing.span(f"tool.{tool_name}", "TOOL", tool__name=tool_name, tool__parameters=arguments,
+                                  email__id=_thread_id(config)):
+                    return await _call_banking_tool(tool_name, arguments)
 
             async def require_valid(tool_name: str, arguments: dict, label: str):
                 """Stop this intent with a customer-facing message if the number is invalid."""
@@ -375,6 +414,7 @@ async def supported_requests(state: EmailState, config: RunnableConfig = None) -
         email_id=_thread_id(config),
         succeeded=[r["intent"] for r in tool_results],
         errors=errors,
+        ms=round((time.perf_counter() - step_started) * 1000),
     )
 
     if errors and tool_results:
@@ -395,6 +435,14 @@ async def supported_requests(state: EmailState, config: RunnableConfig = None) -
 # 7. generate node for the draft email (fixed template, no LLM)
 # --------------------------------------------------
 def generate_draft(state: EmailState, config: RunnableConfig = None) -> dict:  # type: ignore[assignment]
+    with tracing.span("agent.draft", "CHAIN", email__id=_thread_id(config), session__id=_thread_id(config)):
+        out = _generate_draft(state, config)
+        tracing.annotate(draft__status=out.get("status"), draft__chars=len(out.get("draft", "")),
+                         output__value=f"{out.get('status')} ({len(out.get('draft', ''))} characters)")
+        return out
+
+
+def _generate_draft(state: EmailState, config: RunnableConfig = None) -> dict:  # type: ignore[assignment]
     """Build the reply from the verified tool results.
 
     A template, not the LLM, writes the reply, so names, amounts and numbers cannot be
@@ -404,6 +452,7 @@ def generate_draft(state: EmailState, config: RunnableConfig = None) -> dict:  #
     if not state.intents:
         return handle_unsupported(state)
 
+    started = time.perf_counter()
     try:
         draft = build_reply(
             state.email_text,
@@ -426,6 +475,7 @@ def generate_draft(state: EmailState, config: RunnableConfig = None) -> dict:  #
         email_id=_thread_id(config),
         sentiment=state.sentiment,
         priority=priority_for(state.sentiment),
+        ms=round((time.perf_counter() - started) * 1000),
     )
     return {"draft": draft, "status": "draft_generated"}
 

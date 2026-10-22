@@ -1,9 +1,11 @@
 
 import asyncio
 import hmac
+from difflib import SequenceMatcher
 import json
 import logging
 import os
+import time
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Security, status
@@ -12,7 +14,7 @@ from langgraph.types import Command
 
 from models.email_state import priority_for
 from utils.database import get_connection
-from utils import mailbox
+from utils import mailbox, tracing
 from utils.email_reader import INBOX_DIR, parse_eml, process_attachments
 from utils.logging_config import audit
 
@@ -104,6 +106,23 @@ async def run_email(
     subject: str = "",
     message_id: str | None = None,
 ):
+    """Shared by POST /emails/process and the inbox poller. One trace per email."""
+    with tracing.span("email.process", "CHAIN", email__chars=len(email_text), email__attachments=len(attachments),
+                      input__value=f"email: {len(email_text)} characters, {len(attachments)} attachment(s)") as current:
+        response = await _run_email(workflow, email_text, sender_email, attachments, subject, message_id)
+        tracing.set_attributes(current, {"email.id": response.email_id, "session.id": response.email_id,
+                                         "email.status": response.status, "output.value": f"status: {response.status}"})
+        return response
+
+
+async def _run_email(
+    workflow,
+    email_text: str,
+    sender_email,
+    attachments=(),
+    subject: str = "",
+    message_id: str | None = None,
+):
     """Shared by POST /emails/process and the inbox poller."""
 
     # Resolve the sender to a registered customer.
@@ -128,7 +147,9 @@ async def run_email(
     audit("email_received", email_id=email_id, customer_id=customer_id)
 
     # Only after the sender is verified: save attachments and read their text (off the event loop).
+    pipeline_started = time.perf_counter()
     attachment_text = await asyncio.to_thread(process_attachments, email_id, list(attachments))
+    attachments_ms = round((time.perf_counter() - pipeline_started) * 1000)
 
     # Use the email ID as the thread ID so its workflow can be resumed later.
     config = {
@@ -151,11 +172,15 @@ async def run_email(
 
         # Check whether LangGraph paused for human review.
         is_pending_review = bool(result.get("__interrupt__"))
+        total_ms = round((time.perf_counter() - pipeline_started) * 1000)
 
         if is_pending_review:
             final_status = "pending_review"
         else:
             final_status = result.get("status", "processed")
+
+        # Everything the machine does before a person takes over, for the latency report.
+        audit("email_pipeline", email_id=email_id, status=final_status, attachments_ms=attachments_ms, total_ms=total_ms)
 
         update_email_record(
             email_id,
@@ -257,6 +282,19 @@ async def _handle_mailbox_message(workflow, raw: bytes) -> dict:
 
 
 async def poll_mailbox(workflow) -> list[dict]:
+    """Fetch unread Gmail, process each message, then mark them read (one trace span for the poll)."""
+    with tracing.span("mailbox.poll", "CHAIN") as current:
+        results = await _poll_mailbox(workflow)
+        tracing.set_attributes(current, {
+            "mailbox.messages": len(results),
+            "mailbox.processed": sum("email_id" in r for r in results),
+            "mailbox.skipped": sum("skipped" in r for r in results),
+            "mailbox.errors": sum("error" in r for r in results),
+        })
+        return results
+
+
+async def _poll_mailbox(workflow) -> list[dict]:
     """Fetch unread Gmail, process each message, then mark them read.
 
     Messages are marked read even if processing failed, so one bad message is not retried forever;
@@ -349,6 +387,26 @@ async def review_email(
     request: EmailReviewRequest,
     http_request: Request,
 ):
+    """Approve, edit, or reject a draft and resume LangGraph. Traced: did the reviewer change the draft, and how much?"""
+    record = get_email_record(email_id)
+    with tracing.span("email.review", "CHAIN", email__id=email_id, session__id=email_id, review__approved=request.approved,
+                      input__value=f"approved={request.approved}") as current:
+        result = await _review_email(email_id, request, http_request)
+        original = (record["draft"] if record else "").strip()
+        final = (request.edited_draft or original).strip() if request.approved else original
+        tracing.set_attributes(current, {
+            "review.edited": request.approved and final != original,
+            # 1.0 = approved as written; lower = the reviewer rewrote more of it (a quality signal for the draft)
+            "review.edit_similarity": round(SequenceMatcher(None, original, final).ratio(), 3) if request.approved else None,
+            "review.has_feedback": bool(request.feedback),
+            "email.status": result.status,
+            "email.delivery_status": result.delivery_status,
+            "output.value": f"{result.status}; delivery: {result.delivery_status}",
+        })
+        return result
+
+
+async def _review_email(email_id: str, request: EmailReviewRequest, http_request: Request):
     """Approve, edit, or reject a draft and resume LangGraph."""
     workflow = http_request.app.state.email_workflow
     
@@ -491,7 +549,8 @@ async def _deliver(email_id: str, record: dict, draft: str) -> str:
     else:
         subject, body = mailbox.split_subject(draft, fallback=mailbox.reply_subject(record["subject"]))
         try:
-            await asyncio.to_thread(mailbox.send_reply, recipient, subject, body, record.get("message_id"))
+            with tracing.span("email.send", "CHAIN", email__id=email_id, send__recipient_domain=recipient.split("@")[-1]):
+                await asyncio.to_thread(mailbox.send_reply, recipient, subject, body, record.get("message_id"))
             status_ = "sent"
         except Exception:  # noqa: BLE001
             logger.exception("Sending reply failed. email_id=%s", email_id)

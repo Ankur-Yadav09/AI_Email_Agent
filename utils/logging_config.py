@@ -39,9 +39,12 @@ class _MaskingFilter(logging.Filter):
 
 
 def audit(event: str, **fields) -> None:
-    """Append one masked JSON line to logs/audit.log."""
+    """Append one masked JSON line to logs/audit.log (with the trace id when tracing is on)."""
+    from utils.tracing import current_trace_id  # imported here: tracing itself imports this module
+
+    trace_id = current_trace_id()
     logging.getLogger("audit").info(
-        json.dumps({"event": event, **mask_value(fields)}, default=str) # type: ignore
+        json.dumps({"event": event, **mask_value(fields), **({"trace_id": trace_id} if trace_id else {})}, default=str) # type: ignore
     )
 
 
@@ -52,7 +55,6 @@ def setup_logging() -> None:
         return
     root._email_agent_configured = True  # type: ignore[attr-defined]
 
-    LOG_DIR.mkdir(exist_ok=True)
     pii_filter = _MaskingFilter()
 
     def handler(h: logging.Handler, fmt: str) -> logging.Handler:
@@ -60,18 +62,26 @@ def setup_logging() -> None:
         h.addFilter(pii_filter)
         return h
 
+    def file_handler(name: str, backups: int, fmt: str) -> logging.Handler | None:
+        """A rotating log file, or None if the folder is not writable (the service must still start)."""
+        try:
+            LOG_DIR.mkdir(exist_ok=True)
+            return handler(
+                RotatingFileHandler(LOG_DIR / name, maxBytes=5_000_000, backupCount=backups, encoding="utf-8"), fmt
+            )
+        except OSError as exc:
+            logging.getLogger(__name__).warning("Cannot write %s (%s); logging to the console only", name, exc)
+            return None
+
     app_fmt = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+    audit_fmt = "%(asctime)s %(message)s"
     root.setLevel(logging.INFO)
     root.addHandler(handler(logging.StreamHandler(), app_fmt))
-    root.addHandler(handler(
-        RotatingFileHandler(LOG_DIR / "app.log", maxBytes=5_000_000, backupCount=3, encoding="utf-8"),
-        app_fmt,
-    ))
+    if app_file := file_handler("app.log", 3, app_fmt):
+        root.addHandler(app_file)
 
     audit_logger = logging.getLogger("audit")
-    audit_logger.propagate = False  # audit trail only goes to its own file
+    audit_logger.propagate = False  # the audit trail goes only to its own file ...
     audit_logger.setLevel(logging.INFO)
-    audit_logger.addHandler(handler(
-        RotatingFileHandler(LOG_DIR / "audit.log", maxBytes=5_000_000, backupCount=10, encoding="utf-8"),
-        "%(asctime)s %(message)s",
-    ))
+    # ... or to the console if that file cannot be written, so audit lines are never silently dropped
+    audit_logger.addHandler(file_handler("audit.log", 10, audit_fmt) or handler(logging.StreamHandler(), audit_fmt))

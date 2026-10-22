@@ -19,6 +19,20 @@ services:
         condition: service_healthy
     restart: "no"
 
+  # Optional trace viewer (open source; traces stay on this machine). Start it with:
+  #   docker compose --profile tracing up -d
+  # then set OTEL_EXPORTER_OTLP_ENDPOINT=http://phoenix:6006 in .env and open http://localhost:6006
+  # Phoenix has no login of its own, so its port is published to this machine only.
+  phoenix:
+    image: arizephoenix/phoenix:version-20.24.0
+    profiles: ["tracing"]
+    ports:
+      - "127.0.0.1:6006:6006"
+    environment:
+      PHOENIX_WORKING_DIR: /mnt/data
+    volumes:
+      - phoenix_data:/mnt/data
+
   api:
     build: .
     ports:
@@ -36,7 +50,14 @@ services:
     depends_on:
       ollama-pull:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
 volumes:
   ollama_models:
   app_data:
+  phoenix_data:

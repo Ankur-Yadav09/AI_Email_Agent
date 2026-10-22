@@ -119,6 +119,13 @@ Format: **decision**, why, what we rejected, the trade-off we accepted.
 | D24 | **A simulated mailbox of `.eml` files alongside real Gmail** | Demos and tests without credentials; the same parsing code path. | Only real Gmail. | None significant. |
 | D25 | **Requests we cannot complete go to the review queue as "Needs a person", never silently dropped and never auto-answered** | A customer must not hear nothing, and an auto-reply would break the approve-before-send rule. A change of address is a fraud step and must not be done on an email's say-so. | Ignoring them; an automatic acknowledgement; implementing profile changes by email. | A person must handle each one. The wording the customer sees is the client's own (`SUPPORT_CONTACT_TEXT`). |
 | D26 | **Fraud, lost-card or dispute wording forces "urgent" and clears the intents (hand-off)** | These are the emails that most need a person quickly, and answering one with a transactions table is wrong (the real model tagged a fraud report `get_transactions`). | Relying on the model's sentiment or intent alone (it also fails when the model is down). | A short word list: it can over-flag ("dispute" in an unrelated sentence) but never under-flags what it lists. |
+| D27 | **Make the model call deterministic, bounded and warm** (`temperature` 0, fixed seed, explicit `num_ctx`, 120 s timeout, `keep_alive` 30 min, input capped at 6,000 characters) | Same email must give the same answer; a hung model must not hang a request; the first email should not pay the model-load cost; exact fields are still read from the full text. | Defaults. | The model sees only the start of a very long email. |
+| D28 | **Run the container as an unprivileged user, via an entrypoint that fixes ownership then drops privileges (`gosu`)** | Least privilege. A plain `USER` would have locked the app out of volumes created earlier by the root container. | `USER app` alone. | The entrypoint briefly runs as root to `chown`; the app process itself never does. |
+| D29 | **Strict Content-Security-Policy with a per-request nonce on the console** | Defence in depth beside text-only rendering: even if script injection slipped through, it could not run, load or exfiltrate. | `unsafe-inline` (weak); no CSP. | The page is rendered per request; inline `style=` attributes are not allowed. |
+| D30 | **Record each stage's duration in the audit log, and report from it** | Latency should be observable on any machine, not a one-off measurement. | Ad-hoc timing scripts only. | A few extra fields per audit line. |
+| D31 | **Trace with OpenTelemetry, off by default, metadata only unless asked, bundled viewer is self-hosted Phoenix** | We need per-email visibility (token cost, model load time, tool timings, reviewer edits) without letting bank data leave. OpenTelemetry is vendor-neutral, so the client can point the same traces at LangSmith or Langfuse. | LangSmith cloud by default (it receives the raw workflow state: email text, account numbers, tool results); LangChain callback auto-instrumentation (cannot mask what it records). | We write about ten spans ourselves instead of getting auto-instrumentation for free. |
+| D32 | **Warn loudly at start-up if LangSmith tracing is switched on** | LangGraph exports to LangSmith by itself when `LANGSMITH_TRACING=true`; the state it exports holds unmasked customer data. | Silently allowing it; blocking it. | A warning, not a block: the client may legitimately approve it. |
+| D33 | **Record the reviewer's decision as a quality signal** (`review.edited`, `review.edit_similarity`) | It measures draft quality from real use without a labelled data set: approved as written is 1.0, a rewrite is low. | Waiting for labelled data. | Similarity is a proxy for quality, not accuracy. |
 
 ---
 
@@ -172,7 +179,7 @@ Real defects found by testing, and what changed. They explain several decisions 
 
 ## 7. Testing
 
-- **87 automated tests** (at the time of writing), with the LLM, IMAP and SMTP faked and temporary databases: parser cases (including ambiguous and tricky ones), reply template, masking, validation and partial failure, timeouts and retries, review flow, mailbox safety rules, token protection, the XSS guard on the console.
+- **130 automated tests** (at the time of writing), with the LLM, IMAP and SMTP faked and temporary databases: parser cases (including ambiguous and tricky ones), reply template, masking, validation and partial failure, timeouts and retries, review flow, mailbox safety rules, token protection, the XSS guard on the console.
 - **Browser test of the console** (driven Edge: desktop, phone width, dark mode, a hostile email whose HTML and script must show as plain text).
 - **Live runs** against the real 3B model, real Gmail and the Docker stack.
 - **Not covered:** *accuracy on real customer email.* The suite proves the logic is right given a model answer; it does not measure how often the model's answer is right. That needs a labelled set of real emails (see the pilot plan in the client guide).
@@ -190,7 +197,6 @@ Real defects found by testing, and what changed. They explain several decisions 
 | Interval polling, Gmail App Password | Latency, broad credential | IMAP IDLE or webhooks; OAuth |
 | MCP server spawned per email | Start-up cost | Long-lived server or pool |
 | Scanned PDFs, other languages, HTML replies | Narrower coverage | OCR on PDF pages; multilingual model; templates |
-| Unused packages in `pyproject.toml` (langchain, pandas, psycopg2, faker, …) | Larger image, confusing | Remove and regenerate `requirements.txt` |
 | Quarter / financial-year / "last N months" statement periods | Customer is asked instead | Extend `utils/periods.py` |
 | Confidence scoring, RAG policy lookup, monitoring dashboard | Optional items from the brief | After the pilot |
 

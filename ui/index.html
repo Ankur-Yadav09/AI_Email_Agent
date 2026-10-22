@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Reviewer Console</title>
 <link rel="icon" href="data:,">
-<style>
+<style nonce="__NONCE__">
   :root {
     --bg: #f4f6fa; --panel: #ffffff; --text: #18202f; --muted: #5d6676; --line: #dfe3ea; --soft: #f0f3f8;
     --accent: #1f5fbf; --accent-text: #ffffff; --accent-soft: #e6eefb;
@@ -95,6 +95,7 @@
   dialog h2 { font-size: 18px; margin-bottom: 4px; }
   dialog pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto; margin: 10px 0; padding: 10px 12px; background: var(--soft); border: 1px solid var(--line); border-radius: 8px; font: 13px/1.5 ui-monospace, Consolas, monospace; }
   dialog .actions { border-top: 0; padding-top: 0; justify-content: flex-end; }
+  dialog .actions.spaced { margin-top: 16px; }
   #toasts { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 20; max-width: min(420px, calc(100vw - 32px)); }
   .toast { padding: 10px 14px; border-radius: 10px; background: var(--text); color: var(--bg); box-shadow: var(--shadow); cursor: pointer; }
   .toast.ok { background: var(--green); color: #fff; } .toast.error { background: var(--red); color: #fff; }
@@ -182,7 +183,7 @@
   <div class="muted">Nothing will be sent to the customer.</div>
   <label for="reject-reason">Reason (optional, kept in the record)</label>
   <input id="reject-reason" maxlength="500">
-  <div class="actions" style="margin-top:16px">
+  <div class="actions spaced">
     <button id="reject-cancel">Cancel</button>
     <button id="reject-confirm" class="danger">Reject reply</button>
   </div>
@@ -197,7 +198,7 @@
   <textarea id="t-text" rows="5">Subject: Balance Enquiry
 
 Please share my balance for account 1234567890.</textarea>
-  <div class="actions" style="margin-top:16px">
+  <div class="actions spaced">
     <button id="test-cancel">Cancel</button>
     <button id="test-go" class="primary">Process email</button>
   </div>
@@ -209,11 +210,11 @@ Please share my balance for account 1234567890.</textarea>
     <div class="muted">Your administrator sets this in the server's <code>.env</code> file (REVIEWER_TOKEN). It is kept only in this browser tab.</div>
     <label for="token-input">Reviewer token</label>
     <input id="token-input" type="password" autocomplete="off">
-    <div class="actions" style="margin-top:16px"><button class="primary" type="submit">Unlock</button></div>
+    <div class="actions spaced"><button class="primary" type="submit">Unlock</button></div>
   </form>
 </dialog>
 
-<script>
+<script nonce="__NONCE__">
 "use strict";
 // Customers control the text of every email and draft, so all of it is shown with textContent
 // (never parsed as HTML): a hostile email must not be able to run script in the reviewer's browser.

@@ -32,7 +32,7 @@ def require_sender_auth() -> bool:
 
 
 def _imap() -> imaplib.IMAP4_SSL:
-    imap = imaplib.IMAP4_SSL(os.environ.get("IMAP_HOST", "imap.gmail.com"), timeout=30)
+    imap = imaplib.IMAP4_SSL(os.environ.get("IMAP_HOST") or "imap.gmail.com", timeout=30)
     imap.login(address(), os.environ["MAIL_APP_PASSWORD"])
     imap.select("INBOX")
     return imap
@@ -46,7 +46,7 @@ def unseen_criteria(today: date | None = None, with_senders: bool = True) -> lis
 
     The age limit keeps the agent away from a mailbox's old backlog. IMAP dates are day-granular.
     """
-    days = int(os.environ.get("MAIL_MAX_AGE_DAYS", "2"))
+    days = int(os.environ.get("MAIL_MAX_AGE_DAYS") or 2)
     since = (today or date.today()) - timedelta(days=days)
     criteria = ["UNSEEN", "SINCE", f"{since.day:02d}-{_MONTHS[since.month - 1]}-{since.year}"]
 
@@ -128,7 +128,7 @@ def send_reply(to: str, subject: str, body: str, in_reply_to: str | None = None)
         message["References"] = in_reply_to
     message.set_content(body)
 
-    with smtplib.SMTP(os.environ.get("SMTP_HOST", "smtp.gmail.com"), int(os.environ.get("SMTP_PORT", "587")), timeout=30) as smtp:
+    with smtplib.SMTP(os.environ.get("SMTP_HOST") or "smtp.gmail.com", int(os.environ.get("SMTP_PORT") or 587), timeout=30) as smtp:
         smtp.starttls(context=ssl.create_default_context())
         smtp.login(address(), os.environ["MAIL_APP_PASSWORD"])
         smtp.send_message(message)

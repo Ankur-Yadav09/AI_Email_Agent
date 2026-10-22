@@ -7,6 +7,7 @@ Further reading in `docs/`:
 - [DESIGN_AND_DECISIONS.md](docs/DESIGN_AND_DECISIONS.md): the complete flow, the techniques used, and why each decision was taken
 - [CLIENT_GUIDE.md](docs/CLIENT_GUIDE.md): how to explain and demo the project to a client
 - [INTERVIEW_PREP.md](docs/INTERVIEW_PREP.md): the concepts used in the project, with likely interview questions and answers
+- [CASE_STUDY.md](docs/CASE_STUDY.md): the project as an agentic-AI case study (model, agent pattern, tools, memory, state, RAG, context, security, reliability, deployment), with what was not built and how to defend it
 
 ## Features
 
@@ -130,6 +131,13 @@ Set in `.env` (see `.env.example`) or the environment.
 | `REVIEWER_TOKEN` | unset (API open) | Shared secret required by every `/emails` endpoint and the UI. Set it before exposing the port |
 | `SUPPORT_CONTACT_TEXT` | "Please contact customer support for assistance." | Sentence added to the reply when a request cannot be completed by email (e.g. an address change). Set it to the real channel, such as net banking or a phone number |
 | `OLLAMA_MODEL` | `llama3.2:3b` | Model used for classification. Docker pulls it automatically; locally run `ollama pull <model>` |
+| `OLLAMA_TIMEOUT_SECONDS` | `120` | Give up on the model after this long; the email then goes to the review queue as "Needs a person" |
+| `OLLAMA_NUM_CTX` | `4096` | Model context window |
+| `OLLAMA_KEEP_ALIVE` | `30m` | How long the model stays loaded between emails (a cold start adds about 12 s) |
+| `MAX_EMAIL_CHARS` | `6000` | The model sees at most this much of an email; numbers and dates are still read from the full text |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset (tracing off) | Where to send traces, e.g. `http://phoenix:6006` (see Tracing) |
+| `TRACE_CONTENT` | `false` | Also record the prompt and the model's answer in traces (customer text; numbers masked). Development only |
+| `TRACE_PROJECT` | `ai-email-agent` | Project name shown in Phoenix |
 | `OLLAMA_HOST` | local Ollama | Set automatically in Docker |
 | `DATA_DIR` | project folder | Where the SQLite databases live (a volume in Docker, a temp folder in tests) |
 
@@ -154,7 +162,7 @@ agents/    LangGraph workflow, intent classifier, MCP server and client
 apis/      FastAPI routers: email processing and the mock banking API
 models/    Pydantic models and workflow state
 utils/     databases, LLM client, mailbox (IMAP/SMTP), email reader, reply template, logging and masking
-scripts/   demo, sample inbox, Gmail login check, customer registration
+scripts/   demo, sample inbox, Gmail login check, customer registration, latency report
 tests/     pytest suites
 data/      sample_emails.json (demo scenarios); inbox/ and attachments/ are created at runtime
 ui/        reviewer console (single static page)
@@ -170,6 +178,46 @@ uv run python -m pytest tests -v
 ```
 
 The tests need no LLM, network or mailbox: the LLM, IMAP and SMTP are faked, and they use throwaway databases in a temp folder, so they never touch your real data or credentials and can be repeated.
+
+## Tracing (optional)
+
+Every email can be recorded as one **trace**: how long each step took, what the model was asked and cost in tokens, how long it took to load, which tools ran, and what the reviewer decided. It is **off by default** (nothing is recorded or sent) and built on OpenTelemetry, so any compatible tool can show it.
+
+**Turn it on with the bundled viewer** (Arize Phoenix: open source, runs on your machine, nothing leaves it):
+
+```bash
+docker compose --profile tracing up -d       # starts Phoenix; the first time it downloads about 330 MB
+# add to .env:  OTEL_EXPORTER_OTLP_ENDPOINT=http://phoenix:6006
+docker compose up -d                          # restart the API so it picks the setting up
+```
+
+Then open **http://localhost:6006**, project `ai-email-agent`. The Traces tab lists one row per email and per review; click one for the step-by-step tree (`email.process` > `agent.classify` > `llm.chat`, `agent.tools` > one `tool.*` per call, `agent.draft`). **Sessions** groups an email's processing with its later review.
+
+What each trace records, and what you can learn from it:
+
+| Recorded | Why it is useful |
+|---|---|
+| `llm.token_count.*`, `llm.load_ms`, `llm.generate_ms` | Cost and speed of the model call; a large `load_ms` is a cold start |
+| `classify.intents`, `classify.dropped_intents` | How often the model asked for something the email never mentioned |
+| One `tool.*` span per call (arguments masked) | Which tools ran, how long each took, which failed |
+| `review.edited`, `review.edit_similarity` | Did the reviewer change the draft, and how much (1.0 = approved as written)? A measure of draft quality |
+| `trace_id` in every audit-log line | Jump from a log line to its trace and back |
+
+**Privacy.** Only metadata is recorded by default (timings, token counts, intents, tool names, sizes, the email's id). The text of prompts and answers is recorded only if you set `TRACE_CONTENT=true`, and even then account and card numbers are masked; use that on a development machine only. Phoenix has no login, so Compose publishes it on `127.0.0.1` only. Tracing cannot slow or break the service: if the viewer is down, emails are still processed normally (exports run in the background and time out after 3 s, `OTEL_EXPORTER_OTLP_TIMEOUT`).
+
+**Other tools.** Set the standard OpenTelemetry variables instead, for example `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_HEADERS` (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` for a full URL). Langfuse and LangSmith both accept OpenTelemetry traces; see their current documentation for the endpoint and headers. **We have not tested these two** (they need accounts). Both are cloud services, so keep `TRACE_CONTENT` off and check the client's data policy first.
+
+**LangSmith warning.** LangGraph sends its own traces to LangSmith, unmasked, if `LANGSMITH_TRACING=true` is set. That would include the customer's email and account numbers, so the service logs a loud warning at start-up if it is on.
+
+## Speed
+
+About 7 seconds from an email being picked up to a draft ready for review (84% of it the language model), on a laptop CPU; the first email after a restart or a long idle takes about 20 seconds while the model loads. One worker handles roughly 480 emails an hour. Every stage writes its duration to the audit log; summarise it with:
+
+```bash
+docker compose exec api python scripts/latency_report.py     # or: python scripts/latency_report.py
+```
+
+Measurements and what they mean: [docs/CASE_STUDY.md](docs/CASE_STUDY.md#513-latency-and-throughput).
 
 ## Logs and audit
 

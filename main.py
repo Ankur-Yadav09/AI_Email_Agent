@@ -2,18 +2,19 @@
 import asyncio
 import logging
 import os
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi.responses import HTMLResponse
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from agents.email_workflow import build_email_workflow
 from apis.banking_api import router as banking_router
 from apis.email_api import poll_mailbox
 from apis.email_api import router as email_router
-from utils import mailbox
+from utils import mailbox, tracing
 from utils.database import initialize_database
 from utils.email_database import initialize_email_database
 from utils.logging_config import setup_logging
@@ -52,6 +53,9 @@ async def lifespan(app: FastAPI):
     if not os.environ.get("REVIEWER_TOKEN"):
         logger.warning("REVIEWER_TOKEN is not set: anyone who can reach this port can approve and send replies.")
 
+    tracing.warn_if_cloud_tracing()
+    tracing.setup_tracing()  # off unless an OTLP endpoint is configured
+
     # Initialize the existing banking and email databases.
     initialize_database()
     initialize_email_database()
@@ -68,7 +72,7 @@ async def lifespan(app: FastAPI):
         app.state.email_workflow = build_email_workflow(checkpointer)
 
         # Optional background polling of the real mailbox (MAIL_POLL_SECONDS=0 turns it off).
-        poll_seconds = int(os.environ.get("MAIL_POLL_SECONDS", "0"))
+        poll_seconds = int(os.environ.get("MAIL_POLL_SECONDS") or 0)
         poller = None
         if poll_seconds > 0 and mailbox.configured():
             poller = asyncio.create_task(mailbox_poll_loop(app, poll_seconds))
@@ -78,6 +82,7 @@ async def lifespan(app: FastAPI):
 
         if poller:
             poller.cancel()
+        tracing.shutdown()  # send any spans still queued
 
         # Exiting the async context closes the checkpoint connection.
 
@@ -97,8 +102,22 @@ app.include_router(banking_router)
 
 @app.get("/ui", include_in_schema=False)
 def reviewer_console():
-    """The reviewer console. The page itself holds no data; its API calls need the reviewer token."""
-    return FileResponse(PROJECT_ROOT / "ui" / "index.html")
+    """The reviewer console. The page itself holds no data; its API calls need the reviewer token.
+
+    A fresh nonce is put on the page's one script and one style, and the Content-Security-Policy allows
+    only those: no other script or style can run, nothing loads from elsewhere, and the page cannot be framed.
+    """
+    nonce = secrets.token_urlsafe(16)
+    page = (PROJECT_ROOT / "ui" / "index.html").read_text(encoding="utf-8").replace("__NONCE__", nonce)
+    return HTMLResponse(page, headers={
+        "Content-Security-Policy": (
+            f"default-src 'none'; script-src 'nonce-{nonce}'; style-src 'nonce-{nonce}'; connect-src 'self'; "
+            "img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+        ),
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "no-referrer",
+        "Cache-Control": "no-store",  # the nonce must not be reused
+    })
 
 
 @app.get("/health")

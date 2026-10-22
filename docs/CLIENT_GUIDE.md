@@ -112,7 +112,7 @@ Close the demo by opening the **History** tab: every email, its outcome ("Reply 
 ## 7. Questions the client is likely to ask
 
 **"How accurate is it?"**
-Be honest: "It handles the standard cases reliably in our tests, and every reply is reviewed, so errors are caught before sending. We have not yet measured accuracy on your real emails. The pilot's first task is to build a test set from your own mail and measure it." (Our automated test suite has 87 checks; that is not the same as accuracy on real customer mail. Don't conflate them.)
+Be honest: "It handles the standard cases reliably in our tests, and every reply is reviewed, so errors are caught before sending. We have not yet measured accuracy on your real emails. The pilot's first task is to build a test set from your own mail and measure it." (Our automated test suite has 130 checks; that is not the same as accuracy on real customer mail. Don't conflate them.)
 
 **"Can it send replies automatically?"**
 "Technically yes. We deliberately did not. Once you have measured accuracy and are comfortable, you could allow auto-send for the simplest, lowest-risk cases, for example a balance reply with no complaints, and keep human review for the rest."
@@ -127,7 +127,7 @@ Be honest: "It handles the standard cases reliably in our tests, and every reply
 "No per-email AI fees, because the model is local. The cost is the server it runs on. A bigger, more accurate model needs a stronger server, and that is the main tuning decision for the pilot."
 
 **"How fast is it?"**
-"In our tests, about 5 to 10 seconds from email to draft on an ordinary laptop, most of it the AI reading the email. The real delay is the human review, and the console puts the most urgent email first."
+"In our tests, about 7 seconds from the moment an email is picked up to a draft ready for review (10 at worst) on an ordinary laptop with no graphics card, most of it the AI reading the email. The first email after a long idle takes about 20 seconds while the model loads. The real delay is the human review, and the console puts the most urgent email first."
 
 **"Can it handle our volume?"**
 "This version is built for a pilot. The design separates the pieces (mailbox, AI, banking tools, review queue), so scaling is a matter of moving the database to a production one, running several copies and adding a work queue. That is planned, not built."
@@ -142,7 +142,7 @@ Be honest: "It handles the standard cases reliably in our tests, and every reply
 "The email is not guessed at. It is recorded and shown for a person to handle. Nothing is lost."
 
 **"Can we see what it did for a particular email?"**
-"Yes. The audit log shows each step for that email, in order: received, understood, what was looked up, the draft, who approved it, and whether the reply was sent."
+"Yes. The audit log shows each step for that email, in order: received, understood, what was looked up, the draft, who approved it, and whether the reply was sent. Optionally there is also a visual trace of every step with its timing, how many tokens the model used, and whether the reviewer changed the draft; it runs on your own server."
 
 **"How do we add a new type of request?"**
 "One new banking lookup, one new intent and one new section in the reply template. The design document lists the exact steps."

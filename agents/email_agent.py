@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import os
 import re
 import sys
 from datetime import date
@@ -32,6 +33,10 @@ server_params = StdioServerParameters(
 )
 
 logger = logging.getLogger(__name__)
+
+# The model only needs the start of an email to see what is asked. Longer text is cut before the model sees it;
+# account numbers, card numbers and periods are still found in the FULL text by code.
+MAX_EMAIL_CHARS = int(os.environ.get("MAX_EMAIL_CHARS") or 6000)
 
 # Only these intents are supported by our banking email agent.
 ALLOWED_INTENTS = {
@@ -94,7 +99,9 @@ def extract_entities(email_text: str, llm_entities: dict, attachment_text: str =
     )
 
     name = llm_entities.get("customer_name")
-    entities["customer_name"] = name.strip() if isinstance(name, str) and name.strip() else None
+    # small models sometimes write the word "null" as text instead of a JSON null
+    placeholder = isinstance(name, str) and name.strip().lower() in {"null", "none", "n/a", "unknown", "customer"}
+    entities["customer_name"] = name.strip() if isinstance(name, str) and name.strip() and not placeholder else None
     return entities
 
 
@@ -105,6 +112,9 @@ def identify_intent(email_text: str, attachment_text: str = "") -> dict:
     Validate the response before allowing the workflow to use
     any detected intents.
     """
+
+    if len(email_text) > MAX_EMAIL_CHARS:
+        logger.warning("Email is %d characters; the model sees only the first %d", len(email_text), MAX_EMAIL_CHARS)
 
     prompt = f"""
 You are an intent classifier for a banking email assistant.
@@ -137,7 +147,7 @@ Rules:
 
 Customer email:
 <email>
-{email_text}
+{email_text[:MAX_EMAIL_CHARS]}
 </email>
 """
 
@@ -171,6 +181,7 @@ Customer email:
 
         # Accept only known intents and remove duplicates.
         valid_intents = []
+        dropped_intents = []  # what the model said that the email never asked for (tracked: model over-reporting)
 
         for intent in raw_intents:
             if (
@@ -182,6 +193,7 @@ Customer email:
                     valid_intents.append(intent)
                 else:
                     logger.warning("Dropped intent %s: no matching words in the email", intent)
+                    dropped_intents.append(intent)
 
         # Empty list means the email has no supported banking request.
 
@@ -191,6 +203,7 @@ Customer email:
 
         return {
             "intents": valid_intents,
+            "dropped_intents": dropped_intents,
             "sentiment": sentiment,
             "entities": extract_entities(email_text, parsed_response, attachment_text),
         }
